@@ -6,41 +6,187 @@ struct BridgeMenuView: View {
     @EnvironmentObject private var model: RelayAppModel
     @State private var showsNotionToken = false
     @State private var showsWebhookToken = false
+    @State private var tailscaleSettingsExpanded = false
+    @State private var notionSettingsExpanded = false
+    @State private var codexSettingsExpanded = false
+    @State private var completedTailscaleExpanded = false
+    @State private var completedNotionExpanded = false
+    @State private var completedCodexExpanded = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            header
-            Divider()
-            webhookURLSummary
-            stats
-            jobList
-            Divider()
-            settings
-            debugSection
-            controls
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                header
+                Divider()
+                if model.onboardingComplete {
+                    dashboard
+                    Divider()
+                    completedSetup
+                } else {
+                    setupFlow
+                }
+                Divider()
+                debugSection
+                controls
+            }
+            .padding(16)
         }
-        .padding(16)
+        .textFieldStyle(.roundedBorder)
     }
 
     private var header: some View {
         HStack {
-            VStack(alignment: .leading) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text("Codex Notion Bridge")
                     .font(.headline)
-                Text(lastEventText)
+                Text(headerDetailText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Circle()
-                .fill(model.snapshot.serverRunning ? .green : .red)
-                .frame(width: 10, height: 10)
+            HStack(spacing: 6) {
+                Text(model.onboardingComplete ? "Ready" : "Needs setup")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Circle()
+                    .fill(model.onboardingComplete ? .green : .yellow)
+                    .frame(width: 10, height: 10)
+            }
+        }
+    }
+
+    private var headerDetailText: String {
+        if model.onboardingComplete {
+            return lastEventText
+        }
+        if !model.isTailscaleReady {
+            return "Step 1 of 3"
+        }
+        if !model.isNotionReady {
+            return "Step 2 of 3"
+        }
+        return "Step 3 of 3"
+    }
+
+    private var setupFlow: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            setupSection(
+                number: 1,
+                title: "Verify Tailscale",
+                status: model.isTailscaleReady ? .complete : .active
+            ) {
+                tailscaleStepContent
+            }
+
+            if model.isTailscaleReady {
+                setupSection(
+                    number: 2,
+                    title: "Connect Notion",
+                    status: model.isNotionReady ? .complete : .active
+                ) {
+                    notionStepContent
+                }
+            }
+
+            if model.isNotionReady {
+                setupSection(
+                    number: 3,
+                    title: "Configure Codex",
+                    status: model.isCodexReady ? .complete : .active
+                ) {
+                    codexStepContent
+                }
+            }
+        }
+    }
+
+    private func setupSection<Content: View>(
+        number: Int,
+        title: String,
+        status: StepStatus,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("Step \(number)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(title)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                Spacer()
+                Label(status.label, systemImage: status.systemImage)
+                    .font(.caption2)
+                    .foregroundStyle(status.color)
+            }
+            content()
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.18))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var tailscaleStepContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if model.isTailscaleLoading {
+                tailscaleLoadingIndicator
+            }
+            if model.isTailscaleReady {
+                webhookURLSummary
+                DisclosureGroup("Tailscale Settings", isExpanded: $tailscaleSettingsExpanded) {
+                    tailscaleSettingsFields
+                        .padding(.top, 8)
+                }
+            } else {
+                tailscaleReadiness
+                tailscaleSettingsFields
+            }
+        }
+    }
+
+    private var tailscaleLoadingIndicator: some View {
+        HStack(spacing: 6) {
+            ProgressView()
+                .controlSize(.small)
+            Text("Starting Tailscale...")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var tailscaleReadiness: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            compactStatusRow(
+                "Tailscale",
+                tailscaleBackendText,
+                status: model.tailscaleStatus == nil ? .needsValue : .set,
+                isLoading: model.isTailscaleLoading && model.tailscaleStatus == nil
+            )
+            compactStatusRow(
+                "MagicDNS",
+                magicDNSText,
+                status: model.publicWebhookURL == nil ? .needsValue : .set,
+                isLoading: model.isTailscaleLoading && model.publicWebhookURL == nil
+            )
+            compactStatusRow(
+                "Funnel",
+                funnelText,
+                status: model.tailscaleFunnelStatus?.matchesLocalPort == true ? .set : .needsValue,
+                isLoading: model.isTailscaleLoading && model.tailscaleFunnelStatus == nil
+            )
+            if let webhookErrorText {
+                errorText(webhookErrorText)
+            }
         }
     }
 
     private var webhookURLSummary: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
+        VStack(alignment: .leading, spacing: 6) {
+            if let dnsName = model.tailscaleStatus?.dnsName {
+                labeledValue("MagicDNS Hostname", dnsName)
+            }
+            HStack(alignment: .firstTextBaseline) {
                 Text("Webhook URL")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -48,33 +194,205 @@ struct BridgeMenuView: View {
                 Text(model.publicWebhookURLSource)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                Button("Refresh") { model.refreshTailscaleStatus() }
-                Button("Copy") { model.copyWebhookURL() }
-                    .disabled(model.publicWebhookURL == nil)
+                Button {
+                    model.copyWebhookURL()
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+                .disabled(model.publicWebhookURL == nil)
             }
-            Text(model.publicWebhookURL ?? "Tailscale MagicDNS unavailable")
+            Text(model.publicWebhookURL ?? missingWebhookURLText)
                 .font(.caption)
                 .foregroundStyle(model.publicWebhookURL == nil ? .secondary : .primary)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .textSelection(.enabled)
             if let webhookErrorText {
-                Text(webhookErrorText)
-                    .font(.caption2)
-                    .foregroundStyle(.red)
-                    .lineLimit(nil)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
+                errorText(webhookErrorText)
             }
         }
     }
 
-    private var webhookErrorText: String? {
-        if let tailscaleSetupError = model.tailscaleSetupError {
-            return tailscaleSetupError
+    private var tailscaleSettingsFields: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            configField(
+                "Tailscale CLI",
+                status: fieldStatus(
+                    current: model.config.tailscalePath,
+                    saved: model.savedConfig.tailscalePath,
+                    isRequired: true
+                )
+            ) {
+                TextField("tailscale", text: $model.config.tailscalePath)
+            }
+
+            configField(
+                "Local port",
+                status: model.config.localPort == model.savedConfig.localPort ? .set : .changed
+            ) {
+                TextField("7676", value: $model.config.localPort, format: .number)
+            }
+
+            HStack {
+                Button {
+                    model.saveTailscaleSettings()
+                } label: {
+                    Label("Save & Restart Funnel", systemImage: "arrow.clockwise")
+                }
+                .disabled(normalized(model.config.tailscalePath).isEmpty || model.config.localPort == 0 || model.isTailscaleLoading)
+
+                Button {
+                    model.refreshTailscaleStatus()
+                } label: {
+                    Label("Refresh", systemImage: "arrow.triangle.2.circlepath")
+                }
+                .disabled(model.isTailscaleLoading)
+            }
         }
-        return model.tailscaleError
+    }
+
+    private var notionStepContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if model.isNotionReady {
+                readyLine("Notion secrets saved", systemImage: "lock.fill")
+                DisclosureGroup("Notion Settings", isExpanded: $notionSettingsExpanded) {
+                    notionSecretFields
+                        .padding(.top, 8)
+                }
+            } else {
+                notionSecretFields
+            }
+        }
+    }
+
+    private var notionSecretFields: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            secretField(
+                "Notion API token",
+                text: $model.notionTokenInput,
+                isRevealed: $showsNotionToken,
+                status: fieldStatus(
+                    current: model.notionTokenInput,
+                    saved: model.savedNotionTokenInput,
+                    isRequired: true
+                )
+            )
+
+            secretField(
+                "Webhook verification token",
+                text: $model.webhookTokenInput,
+                isRevealed: $showsWebhookToken,
+                status: fieldStatus(
+                    current: model.webhookTokenInput,
+                    saved: model.savedWebhookTokenInput,
+                    isRequired: true
+                )
+            )
+
+            Button {
+                model.saveSecretsToConfigFile()
+            } label: {
+                Label("Save Secrets", systemImage: "square.and.arrow.down")
+            }
+            .disabled(!model.hasNotionSecretChanges)
+        }
+    }
+
+    private var codexStepContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if model.isCodexReady {
+                readyLine("Codex settings saved", systemImage: "terminal.fill")
+                DisclosureGroup("Codex Settings", isExpanded: $codexSettingsExpanded) {
+                    codexConfigFields
+                        .padding(.top, 8)
+                }
+            } else {
+                codexConfigFields
+            }
+        }
+    }
+
+    private var codexConfigFields: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            configField(
+                "Codex path",
+                status: fieldStatus(
+                    current: model.config.codexPath,
+                    saved: model.savedConfig.codexPath,
+                    isRequired: true
+                )
+            ) {
+                TextField("codex", text: $model.config.codexPath)
+            }
+
+            configField(
+                "Codex model",
+                status: fieldStatus(
+                    current: model.config.codexModel,
+                    saved: model.savedConfig.codexModel,
+                    isRequired: false
+                )
+            ) {
+                TextField("optional", text: $model.config.codexModel)
+            }
+
+            configField(
+                "Codex profile",
+                status: fieldStatus(
+                    current: model.config.codexProfile,
+                    saved: model.savedConfig.codexProfile,
+                    isRequired: false
+                )
+            ) {
+                TextField("optional", text: $model.config.codexProfile)
+            }
+
+            HStack {
+                Button {
+                    model.saveCodexSettings()
+                } label: {
+                    Label("Save Codex Settings", systemImage: "square.and.arrow.down")
+                }
+                .disabled(!canSaveCodexSettings)
+
+                Button {
+                    model.openConfigFile()
+                } label: {
+                    Label("Open Config", systemImage: "doc.text")
+                }
+            }
+        }
+    }
+
+    private var dashboard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            stats
+            jobList
+        }
+    }
+
+    private var completedSetup: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Setup")
+                .font(.subheadline)
+                .fontWeight(.semibold)
+            DisclosureGroup("Step 1: Tailscale", isExpanded: $completedTailscaleExpanded) {
+                VStack(alignment: .leading, spacing: 10) {
+                    webhookURLSummary
+                    tailscaleSettingsFields
+                }
+                .padding(.top, 8)
+            }
+            DisclosureGroup("Step 2: Notion", isExpanded: $completedNotionExpanded) {
+                notionSecretFields
+                    .padding(.top, 8)
+            }
+            DisclosureGroup("Step 3: Codex", isExpanded: $completedCodexExpanded) {
+                codexConfigFields
+                    .padding(.top, 8)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var debugSection: some View {
@@ -82,7 +400,7 @@ struct BridgeMenuView: View {
             Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 6) {
                 statusRow("Server", model.snapshot.serverRunning ? "Running" : "Stopped")
                 statusRow("Webhook", model.snapshot.hasWebhookVerificationToken ? "Verified" : "Unverified")
-                statusRow("Tailscale", model.tailscaleStatus?.backendState ?? "Unavailable")
+                statusRow("Tailscale", tailscaleBackendText)
                 if let dnsName = model.tailscaleStatus?.dnsName {
                     statusRow("MagicDNS", dnsName)
                 }
@@ -129,6 +447,7 @@ struct BridgeMenuView: View {
             StatView(label: "Done", value: model.snapshot.totalCompleted)
             StatView(label: "Failed", value: model.snapshot.totalFailed)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var jobList: some View {
@@ -137,9 +456,7 @@ struct BridgeMenuView: View {
                 .font(.subheadline)
                 .fontWeight(.semibold)
             if model.snapshot.activeJobs.isEmpty {
-                Text("No active jobs")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                emptyThreadsState
             } else {
                 ForEach(model.snapshot.activeJobs) { job in
                     VStack(alignment: .leading, spacing: 4) {
@@ -178,111 +495,26 @@ struct BridgeMenuView: View {
         }
     }
 
-    private var settings: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            configSection
-            secretsSection
-        }
-        .textFieldStyle(.roundedBorder)
-    }
-
-    private var configSection: some View {
-        DisclosureGroup("Config") {
-            VStack(alignment: .leading, spacing: 10) {
-                configField(
-                    "Local port",
-                    status: model.config.localPort == model.savedConfig.localPort ? .set : .changed
-                ) {
-                    TextField("7676", value: $model.config.localPort, format: .number)
-                }
-
-                configField(
-                    "Codex path",
-                    status: fieldStatus(
-                        current: model.config.codexPath,
-                        saved: model.savedConfig.codexPath,
-                        isRequired: true
-                    )
-                ) {
-                    TextField("codex", text: $model.config.codexPath)
-                }
-
-                configField(
-                    "Codex model",
-                    status: fieldStatus(
-                        current: model.config.codexModel,
-                        saved: model.savedConfig.codexModel,
-                        isRequired: false
-                    )
-                ) {
-                    TextField("optional", text: $model.config.codexModel)
-                }
-
-                configField(
-                    "Codex profile",
-                    status: fieldStatus(
-                        current: model.config.codexProfile,
-                        saved: model.savedConfig.codexProfile,
-                        isRequired: false
-                    )
-                ) {
-                    TextField("optional", text: $model.config.codexProfile)
-                }
-
-                configField(
-                    "Tailscale CLI",
-                    status: fieldStatus(
-                        current: model.config.tailscalePath,
-                        saved: model.savedConfig.tailscalePath,
-                        isRequired: true
-                    )
-                ) {
-                    TextField("tailscale", text: $model.config.tailscalePath)
-                }
-
-                HStack {
-                    Button("Save Config") { model.saveConfig() }
-                    Button("Open Config") { model.openConfigFile() }
-                }
+    private var emptyThreadsState: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: "text.bubble")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("No active threads")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                Text("Triggered Notion comments will appear here.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
-            .padding(.top, 8)
+            Spacer()
         }
+        .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var secretsSection: some View {
-        DisclosureGroup("Secrets") {
-            VStack(alignment: .leading, spacing: 10) {
-                secretField(
-                    "Notion API token",
-                    text: $model.notionTokenInput,
-                    isRevealed: $showsNotionToken,
-                    status: fieldStatus(
-                        current: model.notionTokenInput,
-                        saved: model.savedNotionTokenInput,
-                        isRequired: true
-                    )
-                )
-
-                secretField(
-                    "Webhook verification token",
-                    text: $model.webhookTokenInput,
-                    isRevealed: $showsWebhookToken,
-                    status: fieldStatus(
-                        current: model.webhookTokenInput,
-                        saved: model.savedWebhookTokenInput,
-                        isRequired: true
-                    )
-                )
-
-                Button("Save Secrets") {
-                    model.saveSecretsToConfigFile()
-                }
-                .disabled(!hasSecretChanges)
-            }
-            .padding(.top, 8)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.18))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     private func configField<Content: View>(
@@ -337,9 +569,109 @@ struct BridgeMenuView: View {
         }
     }
 
-    private var hasSecretChanges: Bool {
-        normalized(model.notionTokenInput) != normalized(model.savedNotionTokenInput)
-            || normalized(model.webhookTokenInput) != normalized(model.savedWebhookTokenInput)
+    private func compactStatusRow(
+        _ label: String,
+        _ value: String,
+        status: FieldStatus,
+        isLoading: Bool = false
+    ) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            if isLoading {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 10, height: 10)
+            } else {
+                Circle()
+                    .fill(status.color)
+                    .frame(width: 7, height: 7)
+            }
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(value)
+                .font(.caption)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+    }
+
+    private func labeledValue(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(value)
+                .font(.caption)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+        }
+    }
+
+    private func readyLine(_ text: String, systemImage: String) -> some View {
+        Label(text, systemImage: systemImage)
+            .font(.caption)
+            .foregroundStyle(.green)
+    }
+
+    private func errorText(_ text: String) -> some View {
+        Text(text)
+            .font(.caption2)
+            .foregroundStyle(.red)
+            .lineLimit(nil)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .textSelection(.enabled)
+    }
+
+    private var webhookErrorText: String? {
+        if let tailscaleSetupError = model.tailscaleSetupError {
+            return tailscaleSetupError
+        }
+        return model.tailscaleError
+    }
+
+    private var tailscaleBackendText: String {
+        if model.isTailscaleLoading && model.tailscaleStatus == nil {
+            return "Starting Tailscale..."
+        }
+        return model.tailscaleStatus?.backendState ?? "Unavailable"
+    }
+
+    private var magicDNSText: String {
+        if model.isTailscaleLoading && model.publicWebhookURL == nil {
+            return "Starting Tailscale..."
+        }
+        if model.tailscaleStatus?.magicDNSEnabled == false {
+            return "Disabled"
+        }
+        return model.tailscaleStatus?.dnsName ?? "Unavailable"
+    }
+
+    private var funnelText: String {
+        if model.isTailscaleLoading && model.tailscaleFunnelStatus == nil {
+            return "Starting Tailscale..."
+        }
+        guard let funnelStatus = model.tailscaleFunnelStatus else {
+            return "Unavailable"
+        }
+        if funnelStatus.matchesLocalPort {
+            return "Forwarding to \(model.config.localPort)"
+        }
+        if let proxyTarget = funnelStatus.firstProxyTarget {
+            return "Target \(proxyTarget)"
+        }
+        return "Not configured"
+    }
+
+    private var missingWebhookURLText: String {
+        model.isTailscaleLoading ? "Starting Tailscale..." : "Tailscale MagicDNS unavailable"
+    }
+
+    private var canSaveCodexSettings: Bool {
+        !normalized(model.config.codexPath).isEmpty && (!model.isCodexReady || model.hasCodexConfigChanges)
     }
 
     private func fieldStatus(current: String, saved: String, isRequired: Bool) -> FieldStatus {
@@ -373,6 +705,38 @@ struct BridgeMenuView: View {
             return "No events received"
         }
         return "Last event \(lastEventAt.formatted(date: .omitted, time: .shortened))"
+    }
+}
+
+private enum StepStatus {
+    case active
+    case complete
+
+    var label: String {
+        switch self {
+        case .active:
+            "Current"
+        case .complete:
+            "Ready"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .active:
+            "circle.dotted"
+        case .complete:
+            "checkmark.circle.fill"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .active:
+            .secondary
+        case .complete:
+            .green
+        }
     }
 }
 

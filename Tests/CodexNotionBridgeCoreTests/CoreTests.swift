@@ -67,6 +67,7 @@ final class CoreTests: XCTestCase {
 
         XCTAssertEqual(config.localPort, 7676)
         XCTAssertEqual(config.tailscalePath, "tailscale")
+        XCTAssertFalse(config.setup.codexConfigured)
     }
 
     func testTailscaleStatusParsingExtractsMagicDNSName() throws {

@@ -17,6 +17,7 @@ final class RelayAppModel: ObservableObject {
     @Published private(set) var savedWebhookTokenInput = ""
     @Published private(set) var tailscaleStatus: TailscaleStatus?
     @Published private(set) var tailscaleFunnelStatus: TailscaleFunnelStatus?
+    @Published private(set) var isTailscaleLoading = false
 
     let paths: AppPaths
     private let configStore: AppConfigStore
@@ -26,6 +27,7 @@ final class RelayAppModel: ObservableObject {
     private let tailscaleStatusResolver = TailscaleStatusResolver()
     private var server: LocalHTTPServer?
     private var refreshTask: Task<Void, Never>?
+    private var activeTailscaleCommandCount = 0
 
     init() {
         self.paths = AppPaths()
@@ -89,7 +91,48 @@ final class RelayAppModel: ObservableObject {
     }
 
     var menuIcon: String {
-        snapshot.serverRunning && snapshot.hasWebhookVerificationToken ? "checkmark.circle" : "exclamationmark.triangle"
+        onboardingComplete ? "checkmark.circle" : "exclamationmark.triangle"
+    }
+
+    var isTailscaleReady: Bool {
+        !hasTailscaleConfigChanges
+            && snapshot.serverRunning
+            && publicWebhookURL != nil
+            && tailscaleFunnelStatus?.matchesLocalPort == true
+            && tailscaleError == nil
+            && tailscaleSetupError == nil
+    }
+
+    var isNotionReady: Bool {
+        !hasNotionSecretChanges
+            && snapshot.hasNotionToken
+            && snapshot.hasWebhookVerificationToken
+    }
+
+    var isCodexReady: Bool {
+        savedConfig.setup.codexConfigured
+            && !hasCodexConfigChanges
+            && !Self.normalized(savedConfig.codexPath).isEmpty
+    }
+
+    var onboardingComplete: Bool {
+        isTailscaleReady && isNotionReady && isCodexReady
+    }
+
+    var hasTailscaleConfigChanges: Bool {
+        config.localPort != savedConfig.localPort
+            || Self.normalized(config.tailscalePath) != Self.normalized(savedConfig.tailscalePath)
+    }
+
+    var hasCodexConfigChanges: Bool {
+        Self.normalized(config.codexPath) != Self.normalized(savedConfig.codexPath)
+            || Self.normalized(config.codexModel) != Self.normalized(savedConfig.codexModel)
+            || Self.normalized(config.codexProfile) != Self.normalized(savedConfig.codexProfile)
+    }
+
+    var hasNotionSecretChanges: Bool {
+        Self.normalized(notionTokenInput) != Self.normalized(savedNotionTokenInput)
+            || Self.normalized(webhookTokenInput) != Self.normalized(savedWebhookTokenInput)
     }
 
     var publicWebhookURL: String? {
@@ -100,6 +143,9 @@ final class RelayAppModel: ObservableObject {
     }
 
     var publicWebhookURLSource: String {
+        if isTailscaleLoading && publicWebhookURL == nil {
+            return "Starting Tailscale..."
+        }
         if tailscaleFunnelStatus?.matchesLocalPort == true {
             return "Funnel OK"
         }
@@ -142,10 +188,32 @@ final class RelayAppModel: ObservableObject {
     }
 
     func saveConfig() {
+        saveCodexSettings()
+    }
+
+    func saveTailscaleSettings() {
+        let previousConfig = savedConfig
+        var nextConfig = sanitizedConfig(config)
+        nextConfig.setup.codexConfigured = savedConfig.setup.codexConfigured
         do {
-            try configStore.save(config)
-            savedConfig = config
-            refreshTailscaleStatus()
+            try persistConfig(nextConfig)
+            ensureServerAfterSaving(previousConfig: previousConfig, nextConfig: nextConfig)
+            startTailscaleFunnel()
+        } catch {
+            serverError = error.localizedDescription
+        }
+    }
+
+    func saveCodexSettings() {
+        guard !Self.normalized(config.codexPath).isEmpty else {
+            serverError = "Codex path is required."
+            return
+        }
+
+        var nextConfig = sanitizedConfig(config)
+        nextConfig.setup.codexConfigured = true
+        do {
+            try persistConfig(nextConfig)
             refreshNow()
         } catch {
             serverError = error.localizedDescription
@@ -194,6 +262,7 @@ final class RelayAppModel: ObservableObject {
     func refreshTailscaleStatus() {
         let config = self.config
         let tailscaleStatusResolver = self.tailscaleStatusResolver
+        beginTailscaleCommand()
         Task.detached(priority: .utility) { [weak self, config, tailscaleStatusResolver] in
             do {
                 let status = try tailscaleStatusResolver.status(config: config)
@@ -202,12 +271,14 @@ final class RelayAppModel: ObservableObject {
                     self?.tailscaleStatus = status
                     self?.tailscaleFunnelStatus = funnelStatus
                     self?.tailscaleError = nil
+                    self?.finishTailscaleCommand()
                 }
             } catch {
                 await MainActor.run {
                     self?.tailscaleStatus = nil
                     self?.tailscaleFunnelStatus = nil
                     self?.tailscaleError = error.localizedDescription
+                    self?.finishTailscaleCommand()
                 }
             }
         }
@@ -217,6 +288,7 @@ final class RelayAppModel: ObservableObject {
         let config = self.config
         let tailscaleStatusResolver = self.tailscaleStatusResolver
         tailscaleSetupError = nil
+        beginTailscaleCommand()
         Task.detached(priority: .utility) { [weak self, config, tailscaleStatusResolver] in
             do {
                 try tailscaleStatusResolver.startFunnel(config: config)
@@ -227,11 +299,13 @@ final class RelayAppModel: ObservableObject {
                     self?.tailscaleFunnelStatus = funnelStatus
                     self?.tailscaleError = nil
                     self?.tailscaleSetupError = nil
+                    self?.finishTailscaleCommand()
                 }
             } catch {
                 await MainActor.run {
                     self?.tailscaleSetupError = error.localizedDescription
                     self?.refreshTailscaleStatus()
+                    self?.finishTailscaleCommand()
                 }
             }
         }
@@ -288,6 +362,53 @@ final class RelayAppModel: ObservableObject {
         }
     }
 
+    private func sanitizedConfig(_ config: AppConfig) -> AppConfig {
+        var next = config
+        next.codexPath = Self.normalized(next.codexPath)
+        next.codexModel = Self.normalized(next.codexModel)
+        next.codexProfile = Self.normalized(next.codexProfile)
+        next.tailscalePath = Self.normalized(next.tailscalePath)
+        return next
+    }
+
+    private func persistConfig(_ nextConfig: AppConfig) throws {
+        try configStore.save(nextConfig)
+        config = nextConfig
+        savedConfig = nextConfig
+    }
+
+    private func ensureServerAfterSaving(previousConfig: AppConfig, nextConfig: AppConfig) {
+        let wasRunning = server?.isRunning == true
+
+        if wasRunning && previousConfig.localPort != nextConfig.localPort {
+            server?.stop()
+            server = nil
+            startServer()
+            return
+        }
+
+        if !wasRunning && nextConfig.autoStartServer {
+            startServer()
+            return
+        }
+
+        refreshNow()
+    }
+
+    private func beginTailscaleCommand() {
+        activeTailscaleCommandCount += 1
+        isTailscaleLoading = true
+    }
+
+    private func finishTailscaleCommand() {
+        activeTailscaleCommandCount = max(0, activeTailscaleCommandCount - 1)
+        isTailscaleLoading = activeTailscaleCommandCount > 0
+    }
+
+    private static func normalized(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private static func webhookURL(host: String) -> String? {
         let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedHost.isEmpty else {
@@ -322,15 +443,28 @@ final class RelayAppModel: ObservableObject {
         let secretStore = self.secretStore
         let serverRunning = server?.isRunning == true
         Task.detached(priority: .utility) { [weak self, eventStore, secretStore, serverRunning] in
-            let hasNotionToken = ((try? secretStore.get(.notionAPIToken)) ?? nil)?.isEmpty == false
-            let hasWebhookVerificationToken = ((try? secretStore.get(.notionWebhookVerificationToken)) ?? nil)?.isEmpty == false
+            let notionToken = (try? secretStore.get(.notionAPIToken)) ?? ""
+            let webhookToken = (try? secretStore.get(.notionWebhookVerificationToken)) ?? ""
+            let hasNotionToken = !notionToken.isEmpty
+            let hasWebhookVerificationToken = !webhookToken.isEmpty
             let next = await eventStore.snapshot(
                 serverRunning: serverRunning,
                 hasNotionToken: hasNotionToken,
                 hasWebhookVerificationToken: hasWebhookVerificationToken
             )
             await MainActor.run {
-                self?.snapshot = next
+                guard let self else { return }
+
+                if Self.normalized(self.notionTokenInput) == Self.normalized(self.savedNotionTokenInput) {
+                    self.notionTokenInput = notionToken
+                }
+                if Self.normalized(self.webhookTokenInput) == Self.normalized(self.savedWebhookTokenInput) {
+                    self.webhookTokenInput = webhookToken
+                }
+
+                self.savedNotionTokenInput = notionToken
+                self.savedWebhookTokenInput = webhookToken
+                self.snapshot = next
             }
         }
     }

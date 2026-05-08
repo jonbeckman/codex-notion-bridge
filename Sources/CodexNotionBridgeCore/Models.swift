@@ -1,5 +1,15 @@
 import Foundation
 
+public struct AppSetupState: Codable, Equatable, Sendable {
+    public var codexConfigured: Bool
+
+    public init(codexConfigured: Bool) {
+        self.codexConfigured = codexConfigured
+    }
+
+    public static let `default` = AppSetupState(codexConfigured: false)
+}
+
 public struct AppConfig: Codable, Equatable, Sendable {
     public var localPort: UInt16
     public var codexPath: String
@@ -9,6 +19,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
     public var triggerPrefixes: [String]
     public var notionVersion: String
     public var autoStartServer: Bool
+    public var setup: AppSetupState
 
     public init(
         localPort: UInt16,
@@ -18,7 +29,8 @@ public struct AppConfig: Codable, Equatable, Sendable {
         tailscalePath: String,
         triggerPrefixes: [String],
         notionVersion: String,
-        autoStartServer: Bool
+        autoStartServer: Bool,
+        setup: AppSetupState = .default
     ) {
         self.localPort = localPort
         self.codexPath = codexPath
@@ -28,6 +40,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         self.triggerPrefixes = triggerPrefixes
         self.notionVersion = notionVersion
         self.autoStartServer = autoStartServer
+        self.setup = setup
     }
 
     public static let `default` = AppConfig(
@@ -38,7 +51,8 @@ public struct AppConfig: Codable, Equatable, Sendable {
         tailscalePath: "tailscale",
         triggerPrefixes: ["@Codex", "codex:"],
         notionVersion: "2026-03-11",
-        autoStartServer: true
+        autoStartServer: true,
+        setup: .default
     )
 
     enum CodingKeys: String, CodingKey {
@@ -50,6 +64,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         case triggerPrefixes
         case notionVersion
         case autoStartServer
+        case setup
     }
 
     public init(from decoder: Decoder) throws {
@@ -64,6 +79,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         self.triggerPrefixes = try container.decodeIfPresent([String].self, forKey: .triggerPrefixes) ?? defaults.triggerPrefixes
         self.notionVersion = try container.decodeIfPresent(String.self, forKey: .notionVersion) ?? defaults.notionVersion
         self.autoStartServer = try container.decodeIfPresent(Bool.self, forKey: .autoStartServer) ?? defaults.autoStartServer
+        self.setup = try container.decodeIfPresent(AppSetupState.self, forKey: .setup) ?? defaults.setup
     }
 }
 

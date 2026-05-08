@@ -4,7 +4,7 @@ import Network
 public final class LocalHTTPServer: @unchecked Sendable {
     public typealias Handler = @Sendable (HTTPRequest) async -> HTTPResponse
 
-    private let queue = DispatchQueue(label: "NotionCodexBridge.LocalHTTPServer")
+    private let queue = DispatchQueue(label: "CodexNotionBridge.LocalHTTPServer")
     private let handler: Handler
     private var listener: NWListener?
     private var connections: [UUID: HTTPConnection] = [:]

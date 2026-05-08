@@ -207,7 +207,7 @@ public actor WebhookProcessor {
     private func makePrompt(for job: RelayJob) -> String {
         let instruction = TriggerFilter.instructionText(from: job.commentText, prefixes: configStore.load().triggerPrefixes)
         return """
-        You are running from Notion Codex Bridge, a local macOS app that handles Notion comment requests.
+        You are running from Codex Notion Bridge, a local macOS app that handles Notion comment requests.
 
         Source Notion page:
         - Title: \(job.pageTitle)

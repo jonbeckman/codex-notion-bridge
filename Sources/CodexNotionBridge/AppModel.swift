@@ -1,6 +1,6 @@
 import AppKit
 import Foundation
-import NotionCodexBridgeCore
+import CodexNotionBridgeCore
 import SwiftUI
 
 @MainActor
@@ -71,6 +71,7 @@ final class RelayAppModel: ObservableObject {
             activeJobs: []
         )
 
+        loadSecrets()
         startRefreshLoop()
         if config.autoStartServer {
             startServer()
@@ -136,21 +137,29 @@ final class RelayAppModel: ObservableObject {
 
     func saveNotionToken() {
         saveSecret(.notionAPIToken, notionTokenInput)
-        notionTokenInput = ""
     }
 
     func saveWebhookToken() {
         saveSecret(.notionWebhookVerificationToken, webhookTokenInput)
-        webhookTokenInput = ""
     }
 
     func saveTunnelToken() {
         saveSecret(.cloudflareTunnelToken, tunnelTokenInput)
-        tunnelTokenInput = ""
     }
 
     func openSupportFolder() {
         NSWorkspace.shared.open(paths.root)
+    }
+
+    func openConfigFile() {
+        do {
+            if !FileManager.default.fileExists(atPath: paths.configURL.path) {
+                try configStore.save(config)
+            }
+            NSWorkspace.shared.open(paths.configURL)
+        } catch {
+            serverError = error.localizedDescription
+        }
     }
 
     func openURL(_ string: String?) {
@@ -190,11 +199,26 @@ final class RelayAppModel: ObservableObject {
 
     private func saveSecret(_ key: SecretKey, _ value: String) {
         do {
-            try secretStore.set(value.trimmingCharacters(in: .whitespacesAndNewlines), for: key)
+            let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            try secretStore.set(trimmedValue, for: key)
+            switch key {
+            case .notionAPIToken:
+                notionTokenInput = trimmedValue
+            case .notionWebhookVerificationToken:
+                webhookTokenInput = trimmedValue
+            case .cloudflareTunnelToken:
+                tunnelTokenInput = trimmedValue
+            }
             refreshNow()
         } catch {
             serverError = error.localizedDescription
         }
+    }
+
+    private func loadSecrets() {
+        notionTokenInput = (try? secretStore.get(.notionAPIToken)) ?? ""
+        webhookTokenInput = (try? secretStore.get(.notionWebhookVerificationToken)) ?? ""
+        tunnelTokenInput = (try? secretStore.get(.cloudflareTunnelToken)) ?? ""
     }
 
     private func startRefreshLoop() {

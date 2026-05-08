@@ -1,6 +1,6 @@
-# Notion Codex Bridge
+# Codex Notion Bridge
 
-Notion Codex Bridge is a local macOS menu bar app that receives Notion comment webhooks through a Cloudflare named tunnel, verifies `X-Notion-Signature`, fetches comment/page context from Notion, filters for `@Codex` or `codex:`, runs local `codex exec`, and replies to the original Notion discussion with the result.
+Codex Notion Bridge is a local macOS menu bar app that receives Notion comment webhooks through a Cloudflare named tunnel, verifies `X-Notion-Signature`, fetches comment/page context from Notion, filters for `@Codex` or `codex:`, runs local `codex exec`, and replies to the original Notion discussion with the result.
 
 The app is SwiftPM-first and intentionally local-first. Notion write access is kept inside the bridge process; spawned Codex jobs do not receive the Notion API token.
 
@@ -9,7 +9,7 @@ The app is SwiftPM-first and intentionally local-first. Notion write access is k
 ```sh
 swift build
 swift test
-swift run NotionCodexBridge
+swift run CodexNotionBridge
 ```
 
 ## First Run Checklist
@@ -33,12 +33,12 @@ https://<your-tunnel-hostname>/notion/webhook
 
 ## Data Locations
 
-Secrets are stored in macOS Keychain under the service `NotionCodexBridge`.
+Secrets are stored in macOS Keychain under the service `CodexNotionBridge`.
 
 Non-secret state lives under:
 
 ```text
-~/Library/Application Support/NotionCodexBridge/
+~/Library/Application Support/CodexNotionBridge/
 ```
 
 That folder contains config JSON, dedupe state, event/job logs, and per-job workspaces with prompt/output files.

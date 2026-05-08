@@ -14,7 +14,7 @@ public struct AppPaths: Sendable {
             .first
             ?? URL(fileURLWithPath: NSHomeDirectory())
                 .appendingPathComponent("Library/Application Support", isDirectory: true)
-        let base = root ?? supportRoot.appendingPathComponent("NotionCodexBridge", isDirectory: true)
+        let base = root ?? supportRoot.appendingPathComponent("CodexNotionBridge", isDirectory: true)
 
         self.root = base
         self.configURL = base.appendingPathComponent("config.json")

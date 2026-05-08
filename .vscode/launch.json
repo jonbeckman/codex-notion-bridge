@@ -5,20 +5,20 @@
             "request": "launch",
             "args": [],
             "cwd": "${workspaceFolder:codex-notion-bridge}",
-            "name": "Debug NotionCodexBridge",
-            "target": "NotionCodexBridge",
+            "name": "Debug CodexNotionBridge",
+            "target": "CodexNotionBridge",
             "configuration": "debug",
-            "preLaunchTask": "swift: Build Debug NotionCodexBridge"
+            "preLaunchTask": "swift: Build Debug CodexNotionBridge"
         },
         {
             "type": "swift",
             "request": "launch",
             "args": [],
             "cwd": "${workspaceFolder:codex-notion-bridge}",
-            "name": "Release NotionCodexBridge",
-            "target": "NotionCodexBridge",
+            "name": "Release CodexNotionBridge",
+            "target": "CodexNotionBridge",
             "configuration": "release",
-            "preLaunchTask": "swift: Build Release NotionCodexBridge"
+            "preLaunchTask": "swift: Build Release CodexNotionBridge"
         }
     ]
 }

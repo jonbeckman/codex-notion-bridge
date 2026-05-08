@@ -10,7 +10,7 @@ public protocol SecretStoring: Sendable {
 public final class KeychainStore: SecretStoring, @unchecked Sendable {
     private let service: String
 
-    public init(service: String = "NotionCodexBridge") {
+    public init(service: String = "CodexNotionBridge") {
         self.service = service
     }
 

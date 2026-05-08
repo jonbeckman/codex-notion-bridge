@@ -1,13 +1,13 @@
 import AppKit
-import NotionCodexBridgeCore
+import CodexNotionBridgeCore
 import SwiftUI
 
 @main
-struct NotionCodexBridgeApp: App {
+struct CodexNotionBridgeApp: App {
     @StateObject private var model = RelayAppModel()
 
     var body: some Scene {
-        MenuBarExtra("Notion Codex Bridge", systemImage: model.menuIcon) {
+        MenuBarExtra("Codex Notion Bridge", systemImage: model.menuIcon) {
             BridgeMenuView()
                 .environmentObject(model)
                 .frame(width: 420)

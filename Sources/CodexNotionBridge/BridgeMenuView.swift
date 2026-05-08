@@ -1,5 +1,5 @@
 import AppKit
-import NotionCodexBridgeCore
+import CodexNotionBridgeCore
 import SwiftUI
 
 struct BridgeMenuView: View {
@@ -22,7 +22,7 @@ struct BridgeMenuView: View {
     private var header: some View {
         HStack {
             VStack(alignment: .leading) {
-                Text("Notion Codex Bridge")
+                Text("Codex Notion Bridge")
                     .font(.headline)
                 Text(lastEventText)
                     .font(.caption)
@@ -149,6 +149,7 @@ struct BridgeMenuView: View {
                         .frame(width: 240)
                 }
                 Button("Save Config") { model.saveConfig() }
+                Button("Open Config") { model.openConfigFile() }
 
                 SecureField("Notion API token", text: $model.notionTokenInput)
                 Button("Save Notion Token") { model.saveNotionToken() }

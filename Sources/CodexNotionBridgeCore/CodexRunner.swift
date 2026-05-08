@@ -6,7 +6,7 @@ public protocol CodexRunning: Sendable {
 }
 
 public final class LiveCodexRunner: CodexRunning, @unchecked Sendable {
-    private let queue = DispatchQueue(label: "NotionCodexBridge.LiveCodexRunner")
+    private let queue = DispatchQueue(label: "CodexNotionBridge.LiveCodexRunner")
     private var processes: [String: Process] = [:]
 
     public init() {}

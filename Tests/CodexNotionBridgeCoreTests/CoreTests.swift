@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import NotionCodexBridgeCore
+@testable import CodexNotionBridgeCore
 
 final class CoreTests: XCTestCase {
     func testNotionSignatureMatchesDocumentationSample() {
@@ -125,7 +125,7 @@ final class CoreTests: XCTestCase {
 
     private func temporaryDirectory() -> URL {
         FileManager.default.temporaryDirectory
-            .appendingPathComponent("NotionCodexBridgeTests", isDirectory: true)
+            .appendingPathComponent("CodexNotionBridgeTests", isDirectory: true)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
     }
 }

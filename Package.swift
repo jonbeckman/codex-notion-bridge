@@ -3,17 +3,17 @@
 import PackageDescription
 
 let package = Package(
-    name: "NotionCodexBridge",
+    name: "CodexNotionBridge",
     platforms: [
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "NotionCodexBridge", targets: ["NotionCodexBridge"]),
-        .library(name: "NotionCodexBridgeCore", targets: ["NotionCodexBridgeCore"])
+        .executable(name: "CodexNotionBridge", targets: ["CodexNotionBridge"]),
+        .library(name: "CodexNotionBridgeCore", targets: ["CodexNotionBridgeCore"])
     ],
     targets: [
         .target(
-            name: "NotionCodexBridgeCore",
+            name: "CodexNotionBridgeCore",
             linkerSettings: [
                 .linkedFramework("CryptoKit"),
                 .linkedFramework("Network"),
@@ -21,16 +21,16 @@ let package = Package(
             ]
         ),
         .executableTarget(
-            name: "NotionCodexBridge",
-            dependencies: ["NotionCodexBridgeCore"],
+            name: "CodexNotionBridge",
+            dependencies: ["CodexNotionBridgeCore"],
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("SwiftUI")
             ]
         ),
         .testTarget(
-            name: "NotionCodexBridgeCoreTests",
-            dependencies: ["NotionCodexBridgeCore"]
+            name: "CodexNotionBridgeCoreTests",
+            dependencies: ["CodexNotionBridgeCore"]
         )
     ]
 )

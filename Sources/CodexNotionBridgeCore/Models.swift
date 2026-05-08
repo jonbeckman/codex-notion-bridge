@@ -7,31 +7,95 @@ public struct AppConfig: Codable, Equatable, Sendable {
     public var codexProfile: String
     public var cloudflaredPath: String
     public var cloudflareTunnelName: String
+    public var cloudflareAccountID: String
     public var publicWebhookHostname: String
     public var triggerPrefixes: [String]
     public var notionVersion: String
     public var autoStartServer: Bool
     public var autoStartTunnel: Bool
 
+    public init(
+        localPort: UInt16,
+        codexPath: String,
+        codexModel: String,
+        codexProfile: String,
+        cloudflaredPath: String,
+        cloudflareTunnelName: String,
+        cloudflareAccountID: String,
+        publicWebhookHostname: String,
+        triggerPrefixes: [String],
+        notionVersion: String,
+        autoStartServer: Bool,
+        autoStartTunnel: Bool
+    ) {
+        self.localPort = localPort
+        self.codexPath = codexPath
+        self.codexModel = codexModel
+        self.codexProfile = codexProfile
+        self.cloudflaredPath = cloudflaredPath
+        self.cloudflareTunnelName = cloudflareTunnelName
+        self.cloudflareAccountID = cloudflareAccountID
+        self.publicWebhookHostname = publicWebhookHostname
+        self.triggerPrefixes = triggerPrefixes
+        self.notionVersion = notionVersion
+        self.autoStartServer = autoStartServer
+        self.autoStartTunnel = autoStartTunnel
+    }
+
     public static let `default` = AppConfig(
-        localPort: 8787,
+        localPort: 7676,
         codexPath: "codex",
         codexModel: "",
         codexProfile: "",
         cloudflaredPath: "cloudflared",
         cloudflareTunnelName: "",
+        cloudflareAccountID: "",
         publicWebhookHostname: "",
         triggerPrefixes: ["@Codex", "codex:"],
         notionVersion: "2026-03-11",
         autoStartServer: true,
         autoStartTunnel: false
     )
+
+    enum CodingKeys: String, CodingKey {
+        case localPort
+        case codexPath
+        case codexModel
+        case codexProfile
+        case cloudflaredPath
+        case cloudflareTunnelName
+        case cloudflareAccountID
+        case publicWebhookHostname
+        case triggerPrefixes
+        case notionVersion
+        case autoStartServer
+        case autoStartTunnel
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = AppConfig.default
+
+        self.localPort = try container.decodeIfPresent(UInt16.self, forKey: .localPort) ?? defaults.localPort
+        self.codexPath = try container.decodeIfPresent(String.self, forKey: .codexPath) ?? defaults.codexPath
+        self.codexModel = try container.decodeIfPresent(String.self, forKey: .codexModel) ?? defaults.codexModel
+        self.codexProfile = try container.decodeIfPresent(String.self, forKey: .codexProfile) ?? defaults.codexProfile
+        self.cloudflaredPath = try container.decodeIfPresent(String.self, forKey: .cloudflaredPath) ?? defaults.cloudflaredPath
+        self.cloudflareTunnelName = try container.decodeIfPresent(String.self, forKey: .cloudflareTunnelName) ?? defaults.cloudflareTunnelName
+        self.cloudflareAccountID = try container.decodeIfPresent(String.self, forKey: .cloudflareAccountID) ?? defaults.cloudflareAccountID
+        self.publicWebhookHostname = try container.decodeIfPresent(String.self, forKey: .publicWebhookHostname) ?? defaults.publicWebhookHostname
+        self.triggerPrefixes = try container.decodeIfPresent([String].self, forKey: .triggerPrefixes) ?? defaults.triggerPrefixes
+        self.notionVersion = try container.decodeIfPresent(String.self, forKey: .notionVersion) ?? defaults.notionVersion
+        self.autoStartServer = try container.decodeIfPresent(Bool.self, forKey: .autoStartServer) ?? defaults.autoStartServer
+        self.autoStartTunnel = try container.decodeIfPresent(Bool.self, forKey: .autoStartTunnel) ?? defaults.autoStartTunnel
+    }
 }
 
-public enum SecretKey: String, Sendable {
+public enum SecretKey: String, Hashable, Sendable {
     case notionAPIToken
     case notionWebhookVerificationToken
     case cloudflareTunnelToken
+    case cloudflareAPIToken
 }
 
 public struct HTTPRequest: Sendable {

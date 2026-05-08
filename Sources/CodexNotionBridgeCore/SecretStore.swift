@@ -7,6 +7,54 @@ public protocol SecretStoring: Sendable {
     func delete(_ key: SecretKey) throws
 }
 
+public final class CachedSecretStore: SecretStoring, @unchecked Sendable {
+    private let backing: SecretStoring
+    private let lock = NSLock()
+    private var loadedKeys = Set<SecretKey>()
+    private var values: [SecretKey: String] = [:]
+
+    public init(backing: SecretStoring) {
+        self.backing = backing
+    }
+
+    public func get(_ key: SecretKey) throws -> String? {
+        lock.lock()
+        if loadedKeys.contains(key) {
+            let value = values[key]
+            lock.unlock()
+            return value
+        }
+        lock.unlock()
+
+        let value = try backing.get(key)
+
+        lock.lock()
+        loadedKeys.insert(key)
+        values[key] = value
+        lock.unlock()
+
+        return value
+    }
+
+    public func set(_ value: String, for key: SecretKey) throws {
+        try backing.set(value, for: key)
+
+        lock.lock()
+        loadedKeys.insert(key)
+        values[key] = value
+        lock.unlock()
+    }
+
+    public func delete(_ key: SecretKey) throws {
+        try backing.delete(key)
+
+        lock.lock()
+        loadedKeys.insert(key)
+        values.removeValue(forKey: key)
+        lock.unlock()
+    }
+}
+
 public final class KeychainStore: SecretStoring, @unchecked Sendable {
     private let service: String
 

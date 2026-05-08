@@ -7,16 +7,18 @@ struct BridgeMenuView: View {
     @State private var showsNotionToken = false
     @State private var showsWebhookToken = false
     @State private var showsTunnelToken = false
+    @State private var showsCloudflareAPIToken = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
             Divider()
-            statusGrid
+            webhookURLSummary
             stats
             jobList
             Divider()
             settings
+            debugSection
             controls
         }
         .padding(16)
@@ -38,20 +40,52 @@ struct BridgeMenuView: View {
         }
     }
 
-    private var statusGrid: some View {
-        Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 6) {
-            statusRow("Server", model.snapshot.serverRunning ? "Running" : "Stopped")
-            statusRow("Tunnel", model.snapshot.tunnelRunning ? "Running" : "Stopped")
-            statusRow("Notion token", model.snapshot.hasNotionToken ? "Set" : "Missing")
-            statusRow("Webhook", model.snapshot.hasWebhookVerificationToken ? "Verified" : "Unverified")
-            if let serverError = model.serverError {
-                statusRow("Server error", serverError)
+    private var webhookURLSummary: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("Webhook URL")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(model.publicWebhookURLSource)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Button("Refresh") { model.refreshTunnelRouteHostname() }
+                    .disabled(normalized(model.config.cloudflareTunnelName).isEmpty)
+                Button("Copy") { model.copyWebhookURL() }
+                    .disabled(model.publicWebhookURL == nil)
             }
-            if let tunnelError = model.tunnelError {
-                statusRow("Tunnel error", tunnelError)
-            }
+            Text(model.publicWebhookURL ?? "Set Public host in Config")
+                .font(.caption)
+                .foregroundStyle(model.publicWebhookURL == nil ? .secondary : .primary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
         }
-        .font(.caption)
+    }
+
+    private var debugSection: some View {
+        DisclosureGroup("Debug") {
+            Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 6) {
+                statusRow("Server", model.snapshot.serverRunning ? "Running" : "Stopped")
+                statusRow("Tunnel", model.snapshot.tunnelRunning ? "Running" : "Stopped")
+                statusRow("Webhook", model.snapshot.hasWebhookVerificationToken ? "Verified" : "Unverified")
+                if let tunnelRouteHostname = model.tunnelRouteHostname {
+                    statusRow("Route[0]", tunnelRouteHostname)
+                }
+                if let serverError = model.serverError {
+                    statusRow("Server error", serverError)
+                }
+                if let tunnelError = model.tunnelError {
+                    statusRow("Tunnel error", tunnelError)
+                }
+                if let tunnelRouteError = model.tunnelRouteError {
+                    statusRow("Route error", tunnelRouteError)
+                }
+            }
+            .font(.caption)
+            .padding(.top, 8)
+        }
     }
 
     private func statusRow(_ label: String, _ value: String) -> some View {
@@ -121,86 +155,239 @@ struct BridgeMenuView: View {
     }
 
     private var settings: some View {
-        DisclosureGroup("Settings") {
-            VStack(alignment: .leading, spacing: 8) {
-                LabeledContent("Local port") {
-                    TextField("8787", value: $model.config.localPort, format: .number)
-                        .frame(width: 90)
-                }
-                LabeledContent("Codex path") {
-                    TextField("codex", text: $model.config.codexPath)
-                        .frame(width: 240)
-                }
-                LabeledContent("Codex model") {
-                    TextField("optional", text: $model.config.codexModel)
-                        .frame(width: 240)
-                }
-                LabeledContent("Codex profile") {
-                    TextField("optional", text: $model.config.codexProfile)
-                        .frame(width: 240)
-                }
-                LabeledContent("cloudflared") {
-                    TextField("cloudflared", text: $model.config.cloudflaredPath)
-                        .frame(width: 240)
-                }
-                LabeledContent("Tunnel name") {
-                    TextField("name", text: $model.config.cloudflareTunnelName)
-                        .frame(width: 240)
-                }
-                LabeledContent("Public host") {
-                    TextField("https://...", text: $model.config.publicWebhookHostname)
-                        .frame(width: 240)
-                }
-                Button("Save Config") { model.saveConfig() }
-                Button("Open Config") { model.openConfigFile() }
+        VStack(alignment: .leading, spacing: 10) {
+            configSection
+            secretsSection
+        }
+        .textFieldStyle(.roundedBorder)
+    }
 
+    private var configSection: some View {
+        DisclosureGroup("Config") {
+            VStack(alignment: .leading, spacing: 10) {
+                configField(
+                    "Local port",
+                    status: model.config.localPort == model.savedConfig.localPort ? .set : .changed
+                ) {
+                    TextField("7676", value: $model.config.localPort, format: .number)
+                }
+
+                configField(
+                    "Codex path",
+                    status: fieldStatus(
+                        current: model.config.codexPath,
+                        saved: model.savedConfig.codexPath,
+                        isRequired: true
+                    )
+                ) {
+                    TextField("codex", text: $model.config.codexPath)
+                }
+
+                configField(
+                    "Codex model",
+                    status: fieldStatus(
+                        current: model.config.codexModel,
+                        saved: model.savedConfig.codexModel,
+                        isRequired: false
+                    )
+                ) {
+                    TextField("optional", text: $model.config.codexModel)
+                }
+
+                configField(
+                    "Codex profile",
+                    status: fieldStatus(
+                        current: model.config.codexProfile,
+                        saved: model.savedConfig.codexProfile,
+                        isRequired: false
+                    )
+                ) {
+                    TextField("optional", text: $model.config.codexProfile)
+                }
+
+                configField(
+                    "cloudflared",
+                    status: fieldStatus(
+                        current: model.config.cloudflaredPath,
+                        saved: model.savedConfig.cloudflaredPath,
+                        isRequired: true
+                    )
+                ) {
+                    TextField("cloudflared", text: $model.config.cloudflaredPath)
+                }
+
+                configField(
+                    "Tunnel name",
+                    status: fieldStatus(
+                        current: model.config.cloudflareTunnelName,
+                        saved: model.savedConfig.cloudflareTunnelName,
+                        isRequired: false
+                    )
+                ) {
+                    TextField("name", text: $model.config.cloudflareTunnelName)
+                }
+
+                configField(
+                    "Cloudflare account ID",
+                    status: fieldStatus(
+                        current: model.config.cloudflareAccountID,
+                        saved: model.savedConfig.cloudflareAccountID,
+                        isRequired: normalized(model.config.cloudflareTunnelName).isEmpty == false
+                    )
+                ) {
+                    TextField("account id", text: $model.config.cloudflareAccountID)
+                }
+
+                configField(
+                    "Public host",
+                    status: fieldStatus(
+                        current: model.config.publicWebhookHostname,
+                        saved: model.savedConfig.publicWebhookHostname,
+                        isRequired: false
+                    )
+                ) {
+                    TextField("https://...", text: $model.config.publicWebhookHostname)
+                }
+
+                HStack {
+                    Button("Save Config") { model.saveConfig() }
+                    Button("Open Config") { model.openConfigFile() }
+                }
+            }
+            .padding(.top, 8)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var secretsSection: some View {
+        DisclosureGroup("Secrets") {
+            VStack(alignment: .leading, spacing: 10) {
                 secretField(
                     "Notion API token",
                     text: $model.notionTokenInput,
-                    isRevealed: $showsNotionToken
+                    isRevealed: $showsNotionToken,
+                    status: fieldStatus(
+                        current: model.notionTokenInput,
+                        saved: model.savedNotionTokenInput,
+                        isRequired: true
+                    )
                 )
-                Button("Save Notion Token") { model.saveNotionToken() }
-                    .disabled(model.notionTokenInput.isEmpty)
 
                 secretField(
                     "Webhook verification token",
                     text: $model.webhookTokenInput,
-                    isRevealed: $showsWebhookToken
+                    isRevealed: $showsWebhookToken,
+                    status: fieldStatus(
+                        current: model.webhookTokenInput,
+                        saved: model.savedWebhookTokenInput,
+                        isRequired: true
+                    )
                 )
-                Button("Save Webhook Token") { model.saveWebhookToken() }
-                    .disabled(model.webhookTokenInput.isEmpty)
 
                 secretField(
                     "Cloudflare tunnel token",
                     text: $model.tunnelTokenInput,
-                    isRevealed: $showsTunnelToken
+                    isRevealed: $showsTunnelToken,
+                    status: fieldStatus(
+                        current: model.tunnelTokenInput,
+                        saved: model.savedTunnelTokenInput,
+                        isRequired: normalized(model.config.cloudflareTunnelName).isEmpty
+                    )
                 )
-                Button("Save Tunnel Token") { model.saveTunnelToken() }
-                    .disabled(model.tunnelTokenInput.isEmpty)
+
+                secretField(
+                    "Cloudflare API token",
+                    text: $model.cloudflareAPITokenInput,
+                    isRevealed: $showsCloudflareAPIToken,
+                    status: fieldStatus(
+                        current: model.cloudflareAPITokenInput,
+                        saved: model.savedCloudflareAPITokenInput,
+                        isRequired: normalized(model.config.cloudflareTunnelName).isEmpty == false
+                    )
+                )
+
+                Button("Save secrets to keychain") {
+                    model.saveSecretsToKeychain()
+                }
+                .disabled(!hasSecretChanges)
             }
-            .textFieldStyle(.roundedBorder)
             .padding(.top, 8)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func configField<Content: View>(
+        _ title: String,
+        status: FieldStatus,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            fieldLabel(title, status: status)
+            content()
+                .frame(maxWidth: .infinity)
         }
     }
 
-    private func secretField(_ title: String, text: Binding<String>, isRevealed: Binding<Bool>) -> some View {
-        HStack(spacing: 6) {
-            if isRevealed.wrappedValue {
-                TextField(title, text: text)
-                    .frame(width: 206)
-            } else {
-                SecureField(title, text: text)
-                    .frame(width: 206)
+    private func secretField(
+        _ title: String,
+        text: Binding<String>,
+        isRevealed: Binding<Bool>,
+        status: FieldStatus
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            fieldLabel(title, status: status)
+            HStack(spacing: 6) {
+                if isRevealed.wrappedValue {
+                    TextField(title, text: text)
+                } else {
+                    SecureField(title, text: text)
+                }
+                Button {
+                    isRevealed.wrappedValue.toggle()
+                } label: {
+                    Image(systemName: isRevealed.wrappedValue ? "eye.slash" : "eye")
+                        .frame(width: 18)
+                }
+                .buttonStyle(.borderless)
+                .help(isRevealed.wrappedValue ? "Hide \(title)" : "Show \(title)")
             }
-            Button {
-                isRevealed.wrappedValue.toggle()
-            } label: {
-                Image(systemName: isRevealed.wrappedValue ? "eye.slash" : "eye")
-                    .frame(width: 18)
-            }
-            .buttonStyle(.borderless)
-            .help(isRevealed.wrappedValue ? "Hide \(title)" : "Show \(title)")
         }
+    }
+
+    private func fieldLabel(_ title: String, status: FieldStatus) -> some View {
+        HStack {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Circle()
+                .fill(status.color)
+                .frame(width: 8, height: 8)
+                .padding(.trailing, 4)
+                .help(status.label)
+        }
+    }
+
+    private var hasSecretChanges: Bool {
+        normalized(model.notionTokenInput) != normalized(model.savedNotionTokenInput)
+            || normalized(model.webhookTokenInput) != normalized(model.savedWebhookTokenInput)
+            || normalized(model.tunnelTokenInput) != normalized(model.savedTunnelTokenInput)
+            || normalized(model.cloudflareAPITokenInput) != normalized(model.savedCloudflareAPITokenInput)
+    }
+
+    private func fieldStatus(current: String, saved: String, isRequired: Bool) -> FieldStatus {
+        let currentValue = normalized(current)
+        if currentValue != normalized(saved) {
+            return .changed
+        }
+        if currentValue.isEmpty {
+            return isRequired ? .needsValue : .optional
+        }
+        return .set
+    }
+
+    private func normalized(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var controls: some View {
@@ -222,6 +409,39 @@ struct BridgeMenuView: View {
             return "No events received"
         }
         return "Last event \(lastEventAt.formatted(date: .omitted, time: .shortened))"
+    }
+}
+
+private enum FieldStatus {
+    case optional
+    case needsValue
+    case changed
+    case set
+
+    var color: Color {
+        switch self {
+        case .optional:
+            .gray
+        case .needsValue:
+            .red
+        case .changed:
+            .yellow
+        case .set:
+            .green
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .optional:
+            "Optional"
+        case .needsValue:
+            "Needs to be set"
+        case .changed:
+            "Changed since last save"
+        case .set:
+            "Set"
+        }
     }
 }
 

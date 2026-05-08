@@ -28,6 +28,10 @@ public final class TailscaleStatusResolver: @unchecked Sendable {
 
     public init() {}
 
+    public func validate(config: AppConfig) throws {
+        _ = try runTailscale(command: config.tailscalePath, arguments: ["version"])
+    }
+
     public func status(config: AppConfig) throws -> TailscaleStatus {
         let data = try runTailscale(command: config.tailscalePath, arguments: ["status", "--json"])
         return try Self.status(from: data)

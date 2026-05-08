@@ -129,11 +129,8 @@ struct BridgeMenuView: View {
 
     private var tailscaleStepContent: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if model.isTailscaleLoading {
-                tailscaleLoadingIndicator
-            }
             if model.isTailscaleReady {
-                webhookURLSummary
+                readyLine("Tailscale Funnel ready", systemImage: "network")
                 DisclosureGroup("Tailscale Settings", isExpanded: $tailscaleSettingsExpanded) {
                     tailscaleSettingsFields
                         .padding(.top, 8)
@@ -145,35 +142,25 @@ struct BridgeMenuView: View {
         }
     }
 
-    private var tailscaleLoadingIndicator: some View {
-        HStack(spacing: 6) {
-            ProgressView()
-                .controlSize(.small)
-            Text("Starting Tailscale...")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-
     private var tailscaleReadiness: some View {
         VStack(alignment: .leading, spacing: 6) {
             compactStatusRow(
                 "Tailscale",
                 tailscaleBackendText,
                 status: model.tailscaleStatus == nil ? .needsValue : .set,
-                isLoading: model.isTailscaleLoading && model.tailscaleStatus == nil
+                isLoading: model.tailscaleOperationPhase == .validating
             )
             compactStatusRow(
                 "MagicDNS",
                 magicDNSText,
                 status: model.publicWebhookURL == nil ? .needsValue : .set,
-                isLoading: model.isTailscaleLoading && model.publicWebhookURL == nil
+                isLoading: model.tailscaleOperationPhase == .gatheringMagicDNS
             )
             compactStatusRow(
                 "Funnel",
                 funnelText,
                 status: model.tailscaleFunnelStatus?.matchesLocalPort == true ? .set : .needsValue,
-                isLoading: model.isTailscaleLoading && model.tailscaleFunnelStatus == nil
+                isLoading: model.tailscaleOperationPhase == .startingFunnel
             )
             if let webhookErrorText {
                 errorText(webhookErrorText)
@@ -181,19 +168,76 @@ struct BridgeMenuView: View {
         }
     }
 
-    private var webhookURLSummary: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if let dnsName = model.tailscaleStatus?.dnsName {
-                labeledValue("MagicDNS Hostname", dnsName)
+    private var notionSetupInstructions: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            instructionRow(number: 1) {
+                HStack(spacing: 3) {
+                    Text("Create a connection")
+                    Link("here", destination: URL(string: "https://www.notion.so/profile/integrations/internal")!)
+                }
             }
-            HStack(alignment: .firstTextBaseline) {
-                Text("Webhook URL")
+            instructionRow(number: 2) {
+                Text("Give it read and write comment permissions")
+            }
+            instructionRow(number: 3) {
+                Text("Copy the access token and enter it below")
+            }
+            notionAPITokenField
+                .padding(.leading, 22)
+                .padding(.bottom, 4)
+            Divider()
+                .padding(.leading, 22)
+                .padding(.vertical, 2)
+            instructionRow(number: 4) {
+                Text("Copy the webhook URL below and add it as a webhook subscription")
+            }
+            notionWebhookURLRow
+            instructionRow(number: 5) {
+                Text("Copy the verification token back to Notion when it appears")
+            }
+            notionVerificationTokenRow
+        }
+    }
+
+    private func instructionRow<Content: View>(
+        number: Int,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text("\(number).")
+                .foregroundStyle(.secondary)
+                .frame(width: 16, alignment: .trailing)
+            content()
+            Spacer(minLength: 0)
+        }
+        .font(.caption)
+    }
+
+    private var notionAPITokenField: some View {
+        secretField(
+            "Notion API token",
+            text: $model.notionTokenInput,
+            isRevealed: $showsNotionToken,
+            status: fieldStatus(
+                current: model.notionTokenInput,
+                saved: model.savedNotionTokenInput,
+                isRequired: true
+            )
+        )
+    }
+
+    private var notionWebhookURLRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Webhook URL")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                Text(model.publicWebhookURL ?? missingWebhookURLText)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text(model.publicWebhookURLSource)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(model.publicWebhookURL == nil ? .secondary : .primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
                 Button {
                     model.copyWebhookURL()
                 } label: {
@@ -201,14 +245,38 @@ struct BridgeMenuView: View {
                 }
                 .disabled(model.publicWebhookURL == nil)
             }
-            Text(model.publicWebhookURL ?? missingWebhookURLText)
+        }
+    }
+
+    private var notionVerificationTokenRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Verification token")
                 .font(.caption)
-                .foregroundStyle(model.publicWebhookURL == nil ? .secondary : .primary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
-            if let webhookErrorText {
-                errorText(webhookErrorText)
+                .foregroundStyle(.secondary)
+            if let token = webhookVerificationTokenDisplay {
+                HStack(spacing: 6) {
+                    Text(token)
+                        .font(.caption)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                    Button {
+                        model.copyWebhookVerificationToken()
+                    } label: {
+                        Label("Copy", systemImage: "doc.on.doc")
+                    }
+                }
+            } else {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.55)
+                        .frame(width: 12, height: 12)
+                    Text("Waiting for Notion to send the verification token...")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
             }
         }
     }
@@ -253,6 +321,7 @@ struct BridgeMenuView: View {
 
     private var notionStepContent: some View {
         VStack(alignment: .leading, spacing: 10) {
+            notionSetupInstructions
             if model.isNotionReady {
                 readyLine("Notion secrets saved", systemImage: "lock.fill")
                 DisclosureGroup("Notion Settings", isExpanded: $notionSettingsExpanded) {
@@ -267,34 +336,12 @@ struct BridgeMenuView: View {
 
     private var notionSecretFields: some View {
         VStack(alignment: .leading, spacing: 10) {
-            secretField(
-                "Notion API token",
-                text: $model.notionTokenInput,
-                isRevealed: $showsNotionToken,
-                status: fieldStatus(
-                    current: model.notionTokenInput,
-                    saved: model.savedNotionTokenInput,
-                    isRequired: true
-                )
-            )
-
-            secretField(
-                "Webhook verification token",
-                text: $model.webhookTokenInput,
-                isRevealed: $showsWebhookToken,
-                status: fieldStatus(
-                    current: model.webhookTokenInput,
-                    saved: model.savedWebhookTokenInput,
-                    isRequired: true
-                )
-            )
-
             Button {
-                model.saveSecretsToConfigFile()
+                model.saveNotionToken()
             } label: {
-                Label("Save Secrets", systemImage: "square.and.arrow.down")
+                Label("Save Notion Token", systemImage: "square.and.arrow.down")
             }
-            .disabled(!model.hasNotionSecretChanges)
+            .disabled(!hasNotionAPITokenChanges)
         }
     }
 
@@ -378,14 +425,17 @@ struct BridgeMenuView: View {
                 .fontWeight(.semibold)
             DisclosureGroup("Step 1: Tailscale", isExpanded: $completedTailscaleExpanded) {
                 VStack(alignment: .leading, spacing: 10) {
-                    webhookURLSummary
+                    readyLine("Tailscale Funnel ready", systemImage: "network")
                     tailscaleSettingsFields
                 }
                 .padding(.top, 8)
             }
             DisclosureGroup("Step 2: Notion", isExpanded: $completedNotionExpanded) {
-                notionSecretFields
-                    .padding(.top, 8)
+                VStack(alignment: .leading, spacing: 10) {
+                    notionSetupInstructions
+                    notionSecretFields
+                }
+                .padding(.top, 8)
             }
             DisclosureGroup("Step 3: Codex", isExpanded: $completedCodexExpanded) {
                 codexConfigFields
@@ -575,16 +625,19 @@ struct BridgeMenuView: View {
         status: FieldStatus,
         isLoading: Bool = false
     ) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            if isLoading {
-                ProgressView()
-                    .controlSize(.small)
-                    .frame(width: 10, height: 10)
-            } else {
-                Circle()
-                    .fill(status.color)
-                    .frame(width: 7, height: 7)
+        HStack(alignment: .center, spacing: 8) {
+            ZStack {
+                if isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.55)
+                } else {
+                    Circle()
+                        .fill(status.color)
+                        .frame(width: 9, height: 9)
+                }
             }
+            .frame(width: 12, height: 12)
             Text(label)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -593,20 +646,6 @@ struct BridgeMenuView: View {
                 .font(.caption)
                 .lineLimit(1)
                 .truncationMode(.middle)
-        }
-    }
-
-    private func labeledValue(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text(value)
-                .font(.caption)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
         }
     }
 
@@ -633,16 +672,30 @@ struct BridgeMenuView: View {
         return model.tailscaleError
     }
 
+    private var webhookVerificationTokenDisplay: String? {
+        let saved = normalized(model.savedWebhookTokenInput)
+        if !saved.isEmpty {
+            return saved
+        }
+        let current = normalized(model.webhookTokenInput)
+        return current.isEmpty ? nil : current
+    }
+
     private var tailscaleBackendText: String {
-        if model.isTailscaleLoading && model.tailscaleStatus == nil {
-            return "Starting Tailscale..."
+        if model.tailscaleOperationPhase == .validating {
+            return "Validating..."
         }
         return model.tailscaleStatus?.backendState ?? "Unavailable"
     }
 
     private var magicDNSText: String {
-        if model.isTailscaleLoading && model.publicWebhookURL == nil {
-            return "Starting Tailscale..."
+        switch model.tailscaleOperationPhase {
+        case .validating:
+            return "Waiting"
+        case .gatheringMagicDNS:
+            return "Gathering..."
+        case .idle, .startingFunnel:
+            break
         }
         if model.tailscaleStatus?.magicDNSEnabled == false {
             return "Disabled"
@@ -651,8 +704,19 @@ struct BridgeMenuView: View {
     }
 
     private var funnelText: String {
+        switch model.tailscaleOperationPhase {
+        case .validating, .gatheringMagicDNS:
+            return "Waiting"
+        case .startingFunnel:
+            return "Starting..."
+        case .idle:
+            break
+        }
         if model.isTailscaleLoading && model.tailscaleFunnelStatus == nil {
-            return "Starting Tailscale..."
+            return model.tailscaleOperationText
+        }
+        guard model.tailscaleStatus?.magicDNSEnabled != false else {
+            return "Waiting"
         }
         guard let funnelStatus = model.tailscaleFunnelStatus else {
             return "Unavailable"
@@ -667,11 +731,15 @@ struct BridgeMenuView: View {
     }
 
     private var missingWebhookURLText: String {
-        model.isTailscaleLoading ? "Starting Tailscale..." : "Tailscale MagicDNS unavailable"
+        model.isTailscaleLoading ? model.tailscaleOperationText : "Tailscale MagicDNS unavailable"
     }
 
     private var canSaveCodexSettings: Bool {
         !normalized(model.config.codexPath).isEmpty && (!model.isCodexReady || model.hasCodexConfigChanges)
+    }
+
+    private var hasNotionAPITokenChanges: Bool {
+        normalized(model.notionTokenInput) != normalized(model.savedNotionTokenInput)
     }
 
     private func fieldStatus(current: String, saved: String, isRequired: Bool) -> FieldStatus {

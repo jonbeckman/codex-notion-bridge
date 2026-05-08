@@ -3,6 +3,13 @@ import Foundation
 import CodexNotionBridgeCore
 import SwiftUI
 
+enum TailscaleOperationPhase: Equatable {
+    case idle
+    case validating
+    case gatheringMagicDNS
+    case startingFunnel
+}
+
 @MainActor
 final class RelayAppModel: ObservableObject {
     @Published var config: AppConfig
@@ -18,6 +25,7 @@ final class RelayAppModel: ObservableObject {
     @Published private(set) var tailscaleStatus: TailscaleStatus?
     @Published private(set) var tailscaleFunnelStatus: TailscaleFunnelStatus?
     @Published private(set) var isTailscaleLoading = false
+    @Published private(set) var tailscaleOperationPhase: TailscaleOperationPhase = .idle
 
     let paths: AppPaths
     private let configStore: AppConfigStore
@@ -27,7 +35,6 @@ final class RelayAppModel: ObservableObject {
     private let tailscaleStatusResolver = TailscaleStatusResolver()
     private var server: LocalHTTPServer?
     private var refreshTask: Task<Void, Never>?
-    private var activeTailscaleCommandCount = 0
 
     init() {
         self.paths = AppPaths()
@@ -144,7 +151,7 @@ final class RelayAppModel: ObservableObject {
 
     var publicWebhookURLSource: String {
         if isTailscaleLoading && publicWebhookURL == nil {
-            return "Starting Tailscale..."
+            return tailscaleOperationText
         }
         if tailscaleFunnelStatus?.matchesLocalPort == true {
             return "Funnel OK"
@@ -165,6 +172,19 @@ final class RelayAppModel: ObservableObject {
             return "MagicDNS disabled"
         }
         return "Tailscale DNS unavailable"
+    }
+
+    var tailscaleOperationText: String {
+        switch tailscaleOperationPhase {
+        case .idle:
+            "Unavailable"
+        case .validating:
+            "Validating..."
+        case .gatheringMagicDNS:
+            "Gathering..."
+        case .startingFunnel:
+            "Starting..."
+        }
     }
 
     func startServer() {
@@ -221,6 +241,24 @@ final class RelayAppModel: ObservableObject {
     }
 
     func saveSecretsToConfigFile() {
+        saveNotionToken()
+    }
+
+    func saveNotionToken() {
+        do {
+            let notionToken = notionTokenInput.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            try secretStore.set(notionToken, for: .notionAPIToken)
+
+            notionTokenInput = notionToken
+            savedNotionTokenInput = notionToken
+            refreshNow()
+        } catch {
+            serverError = error.localizedDescription
+        }
+    }
+
+    func saveAllSecretsToConfigFile() {
         do {
             let notionToken = notionTokenInput.trimmingCharacters(in: .whitespacesAndNewlines)
             let webhookToken = webhookTokenInput.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -259,26 +297,52 @@ final class RelayAppModel: ObservableObject {
         NSPasteboard.general.setString(publicWebhookURL, forType: .string)
     }
 
+    func copyWebhookVerificationToken() {
+        let token = Self.normalized(savedWebhookTokenInput).isEmpty ? webhookTokenInput : savedWebhookTokenInput
+        guard !Self.normalized(token).isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(Self.normalized(token), forType: .string)
+    }
+
     func refreshTailscaleStatus() {
         let config = self.config
         let tailscaleStatusResolver = self.tailscaleStatusResolver
-        beginTailscaleCommand()
+        setTailscaleOperationPhase(.validating)
         Task.detached(priority: .utility) { [weak self, config, tailscaleStatusResolver] in
             do {
+                try tailscaleStatusResolver.validate(config: config)
+                await MainActor.run {
+                    self?.setTailscaleOperationPhase(.gatheringMagicDNS)
+                }
                 let status = try tailscaleStatusResolver.status(config: config)
-                let funnelStatus = try tailscaleStatusResolver.funnelStatus(config: config)
                 await MainActor.run {
                     self?.tailscaleStatus = status
+                    self?.tailscaleError = nil
+                }
+
+                guard status.magicDNSEnabled, status.dnsName != nil else {
+                    await MainActor.run {
+                        self?.tailscaleFunnelStatus = nil
+                        self?.setTailscaleOperationPhase(.idle)
+                    }
+                    return
+                }
+
+                await MainActor.run {
+                    self?.setTailscaleOperationPhase(.startingFunnel)
+                }
+                let funnelStatus = try tailscaleStatusResolver.funnelStatus(config: config)
+                await MainActor.run {
                     self?.tailscaleFunnelStatus = funnelStatus
                     self?.tailscaleError = nil
-                    self?.finishTailscaleCommand()
+                    self?.setTailscaleOperationPhase(.idle)
                 }
             } catch {
                 await MainActor.run {
                     self?.tailscaleStatus = nil
                     self?.tailscaleFunnelStatus = nil
                     self?.tailscaleError = error.localizedDescription
-                    self?.finishTailscaleCommand()
+                    self?.setTailscaleOperationPhase(.idle)
                 }
             }
         }
@@ -288,24 +352,43 @@ final class RelayAppModel: ObservableObject {
         let config = self.config
         let tailscaleStatusResolver = self.tailscaleStatusResolver
         tailscaleSetupError = nil
-        beginTailscaleCommand()
+        setTailscaleOperationPhase(.validating)
         Task.detached(priority: .utility) { [weak self, config, tailscaleStatusResolver] in
             do {
-                try tailscaleStatusResolver.startFunnel(config: config)
+                try tailscaleStatusResolver.validate(config: config)
+                await MainActor.run {
+                    self?.setTailscaleOperationPhase(.gatheringMagicDNS)
+                }
                 let status = try tailscaleStatusResolver.status(config: config)
-                let funnelStatus = try tailscaleStatusResolver.funnelStatus(config: config)
                 await MainActor.run {
                     self?.tailscaleStatus = status
+                    self?.tailscaleError = nil
+                }
+
+                guard status.magicDNSEnabled, status.dnsName != nil else {
+                    await MainActor.run {
+                        self?.tailscaleFunnelStatus = nil
+                        self?.tailscaleSetupError = "MagicDNS is disabled or unavailable. Enable MagicDNS in Tailscale before starting Funnel."
+                        self?.setTailscaleOperationPhase(.idle)
+                    }
+                    return
+                }
+
+                await MainActor.run {
+                    self?.setTailscaleOperationPhase(.startingFunnel)
+                }
+                try tailscaleStatusResolver.startFunnel(config: config)
+                let funnelStatus = try tailscaleStatusResolver.funnelStatus(config: config)
+                await MainActor.run {
                     self?.tailscaleFunnelStatus = funnelStatus
                     self?.tailscaleError = nil
                     self?.tailscaleSetupError = nil
-                    self?.finishTailscaleCommand()
+                    self?.setTailscaleOperationPhase(.idle)
                 }
             } catch {
                 await MainActor.run {
                     self?.tailscaleSetupError = error.localizedDescription
-                    self?.refreshTailscaleStatus()
-                    self?.finishTailscaleCommand()
+                    self?.setTailscaleOperationPhase(.idle)
                 }
             }
         }
@@ -395,14 +478,9 @@ final class RelayAppModel: ObservableObject {
         refreshNow()
     }
 
-    private func beginTailscaleCommand() {
-        activeTailscaleCommandCount += 1
-        isTailscaleLoading = true
-    }
-
-    private func finishTailscaleCommand() {
-        activeTailscaleCommandCount = max(0, activeTailscaleCommandCount - 1)
-        isTailscaleLoading = activeTailscaleCommandCount > 0
+    private func setTailscaleOperationPhase(_ phase: TailscaleOperationPhase) {
+        tailscaleOperationPhase = phase
+        isTailscaleLoading = phase != .idle
     }
 
     private static func normalized(_ value: String) -> String {

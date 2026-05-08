@@ -4,6 +4,9 @@ import SwiftUI
 
 struct BridgeMenuView: View {
     @EnvironmentObject private var model: RelayAppModel
+    @State private var showsNotionToken = false
+    @State private var showsWebhookToken = false
+    @State private var showsTunnelToken = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -151,20 +154,52 @@ struct BridgeMenuView: View {
                 Button("Save Config") { model.saveConfig() }
                 Button("Open Config") { model.openConfigFile() }
 
-                SecureField("Notion API token", text: $model.notionTokenInput)
+                secretField(
+                    "Notion API token",
+                    text: $model.notionTokenInput,
+                    isRevealed: $showsNotionToken
+                )
                 Button("Save Notion Token") { model.saveNotionToken() }
                     .disabled(model.notionTokenInput.isEmpty)
 
-                SecureField("Webhook verification token", text: $model.webhookTokenInput)
+                secretField(
+                    "Webhook verification token",
+                    text: $model.webhookTokenInput,
+                    isRevealed: $showsWebhookToken
+                )
                 Button("Save Webhook Token") { model.saveWebhookToken() }
                     .disabled(model.webhookTokenInput.isEmpty)
 
-                SecureField("Cloudflare tunnel token", text: $model.tunnelTokenInput)
+                secretField(
+                    "Cloudflare tunnel token",
+                    text: $model.tunnelTokenInput,
+                    isRevealed: $showsTunnelToken
+                )
                 Button("Save Tunnel Token") { model.saveTunnelToken() }
                     .disabled(model.tunnelTokenInput.isEmpty)
             }
             .textFieldStyle(.roundedBorder)
             .padding(.top, 8)
+        }
+    }
+
+    private func secretField(_ title: String, text: Binding<String>, isRevealed: Binding<Bool>) -> some View {
+        HStack(spacing: 6) {
+            if isRevealed.wrappedValue {
+                TextField(title, text: text)
+                    .frame(width: 206)
+            } else {
+                SecureField(title, text: text)
+                    .frame(width: 206)
+            }
+            Button {
+                isRevealed.wrappedValue.toggle()
+            } label: {
+                Image(systemName: isRevealed.wrappedValue ? "eye.slash" : "eye")
+                    .frame(width: 18)
+            }
+            .buttonStyle(.borderless)
+            .help(isRevealed.wrappedValue ? "Hide \(title)" : "Show \(title)")
         }
     }
 

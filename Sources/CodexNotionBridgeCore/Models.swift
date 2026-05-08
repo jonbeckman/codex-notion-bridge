@@ -5,41 +5,29 @@ public struct AppConfig: Codable, Equatable, Sendable {
     public var codexPath: String
     public var codexModel: String
     public var codexProfile: String
-    public var cloudflaredPath: String
-    public var cloudflareTunnelName: String
-    public var cloudflareAccountID: String
-    public var publicWebhookHostname: String
+    public var tailscalePath: String
     public var triggerPrefixes: [String]
     public var notionVersion: String
     public var autoStartServer: Bool
-    public var autoStartTunnel: Bool
 
     public init(
         localPort: UInt16,
         codexPath: String,
         codexModel: String,
         codexProfile: String,
-        cloudflaredPath: String,
-        cloudflareTunnelName: String,
-        cloudflareAccountID: String,
-        publicWebhookHostname: String,
+        tailscalePath: String,
         triggerPrefixes: [String],
         notionVersion: String,
-        autoStartServer: Bool,
-        autoStartTunnel: Bool
+        autoStartServer: Bool
     ) {
         self.localPort = localPort
         self.codexPath = codexPath
         self.codexModel = codexModel
         self.codexProfile = codexProfile
-        self.cloudflaredPath = cloudflaredPath
-        self.cloudflareTunnelName = cloudflareTunnelName
-        self.cloudflareAccountID = cloudflareAccountID
-        self.publicWebhookHostname = publicWebhookHostname
+        self.tailscalePath = tailscalePath
         self.triggerPrefixes = triggerPrefixes
         self.notionVersion = notionVersion
         self.autoStartServer = autoStartServer
-        self.autoStartTunnel = autoStartTunnel
     }
 
     public static let `default` = AppConfig(
@@ -47,14 +35,10 @@ public struct AppConfig: Codable, Equatable, Sendable {
         codexPath: "codex",
         codexModel: "",
         codexProfile: "",
-        cloudflaredPath: "cloudflared",
-        cloudflareTunnelName: "",
-        cloudflareAccountID: "",
-        publicWebhookHostname: "",
+        tailscalePath: "tailscale",
         triggerPrefixes: ["@Codex", "codex:"],
         notionVersion: "2026-03-11",
-        autoStartServer: true,
-        autoStartTunnel: false
+        autoStartServer: true
     )
 
     enum CodingKeys: String, CodingKey {
@@ -62,14 +46,10 @@ public struct AppConfig: Codable, Equatable, Sendable {
         case codexPath
         case codexModel
         case codexProfile
-        case cloudflaredPath
-        case cloudflareTunnelName
-        case cloudflareAccountID
-        case publicWebhookHostname
+        case tailscalePath
         case triggerPrefixes
         case notionVersion
         case autoStartServer
-        case autoStartTunnel
     }
 
     public init(from decoder: Decoder) throws {
@@ -80,22 +60,16 @@ public struct AppConfig: Codable, Equatable, Sendable {
         self.codexPath = try container.decodeIfPresent(String.self, forKey: .codexPath) ?? defaults.codexPath
         self.codexModel = try container.decodeIfPresent(String.self, forKey: .codexModel) ?? defaults.codexModel
         self.codexProfile = try container.decodeIfPresent(String.self, forKey: .codexProfile) ?? defaults.codexProfile
-        self.cloudflaredPath = try container.decodeIfPresent(String.self, forKey: .cloudflaredPath) ?? defaults.cloudflaredPath
-        self.cloudflareTunnelName = try container.decodeIfPresent(String.self, forKey: .cloudflareTunnelName) ?? defaults.cloudflareTunnelName
-        self.cloudflareAccountID = try container.decodeIfPresent(String.self, forKey: .cloudflareAccountID) ?? defaults.cloudflareAccountID
-        self.publicWebhookHostname = try container.decodeIfPresent(String.self, forKey: .publicWebhookHostname) ?? defaults.publicWebhookHostname
+        self.tailscalePath = try container.decodeIfPresent(String.self, forKey: .tailscalePath) ?? defaults.tailscalePath
         self.triggerPrefixes = try container.decodeIfPresent([String].self, forKey: .triggerPrefixes) ?? defaults.triggerPrefixes
         self.notionVersion = try container.decodeIfPresent(String.self, forKey: .notionVersion) ?? defaults.notionVersion
         self.autoStartServer = try container.decodeIfPresent(Bool.self, forKey: .autoStartServer) ?? defaults.autoStartServer
-        self.autoStartTunnel = try container.decodeIfPresent(Bool.self, forKey: .autoStartTunnel) ?? defaults.autoStartTunnel
     }
 }
 
-public enum SecretKey: String, Hashable, Sendable {
+public enum SecretKey: String, CaseIterable, Hashable, Sendable {
     case notionAPIToken
     case notionWebhookVerificationToken
-    case cloudflareTunnelToken
-    case cloudflareAPIToken
 }
 
 public struct HTTPRequest: Sendable {
@@ -190,10 +164,8 @@ public struct RelayEventRecord: Codable, Sendable {
 
 public struct RelaySnapshot: Codable, Equatable, Sendable {
     public var serverRunning: Bool
-    public var tunnelRunning: Bool
     public var hasNotionToken: Bool
     public var hasWebhookVerificationToken: Bool
-    public var hasCloudflareTunnelToken: Bool
     public var lastEventAt: Date?
     public var totalReceived: Int
     public var totalIgnored: Int
@@ -206,10 +178,8 @@ public struct RelaySnapshot: Codable, Equatable, Sendable {
 
     public init(
         serverRunning: Bool,
-        tunnelRunning: Bool,
         hasNotionToken: Bool,
         hasWebhookVerificationToken: Bool,
-        hasCloudflareTunnelToken: Bool,
         lastEventAt: Date?,
         totalReceived: Int,
         totalIgnored: Int,
@@ -221,10 +191,8 @@ public struct RelaySnapshot: Codable, Equatable, Sendable {
         activeJobs: [RelayJob]
     ) {
         self.serverRunning = serverRunning
-        self.tunnelRunning = tunnelRunning
         self.hasNotionToken = hasNotionToken
         self.hasWebhookVerificationToken = hasWebhookVerificationToken
-        self.hasCloudflareTunnelToken = hasCloudflareTunnelToken
         self.lastEventAt = lastEventAt
         self.totalReceived = totalReceived
         self.totalIgnored = totalIgnored

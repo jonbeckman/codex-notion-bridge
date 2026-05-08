@@ -3,6 +3,7 @@ import Foundation
 public struct AppPaths: Sendable {
     public let root: URL
     public let configURL: URL
+    public let secretsURL: URL
     public let dedupeURL: URL
     public let jobsURL: URL
     public let eventsJSONLURL: URL
@@ -18,6 +19,7 @@ public struct AppPaths: Sendable {
 
         self.root = base
         self.configURL = base.appendingPathComponent("config.json")
+        self.secretsURL = base.appendingPathComponent("secrets.json")
         self.dedupeURL = base.appendingPathComponent("dedupe.json")
         self.jobsURL = base.appendingPathComponent("jobs.json")
         self.eventsJSONLURL = base.appendingPathComponent("events.jsonl")

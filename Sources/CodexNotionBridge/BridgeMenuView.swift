@@ -6,8 +6,6 @@ struct BridgeMenuView: View {
     @EnvironmentObject private var model: RelayAppModel
     @State private var showsNotionToken = false
     @State private var showsWebhookToken = false
-    @State private var showsTunnelToken = false
-    @State private var showsCloudflareAPIToken = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -50,37 +48,62 @@ struct BridgeMenuView: View {
                 Text(model.publicWebhookURLSource)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                Button("Refresh") { model.refreshTunnelRouteHostname() }
-                    .disabled(normalized(model.config.cloudflareTunnelName).isEmpty)
+                Button("Refresh") { model.refreshTailscaleStatus() }
                 Button("Copy") { model.copyWebhookURL() }
                     .disabled(model.publicWebhookURL == nil)
             }
-            Text(model.publicWebhookURL ?? "Set Public host in Config")
+            Text(model.publicWebhookURL ?? "Tailscale MagicDNS unavailable")
                 .font(.caption)
                 .foregroundStyle(model.publicWebhookURL == nil ? .secondary : .primary)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .textSelection(.enabled)
+            if let webhookErrorText {
+                Text(webhookErrorText)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
         }
+    }
+
+    private var webhookErrorText: String? {
+        if let tailscaleSetupError = model.tailscaleSetupError {
+            return tailscaleSetupError
+        }
+        return model.tailscaleError
     }
 
     private var debugSection: some View {
         DisclosureGroup("Debug") {
             Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 6) {
                 statusRow("Server", model.snapshot.serverRunning ? "Running" : "Stopped")
-                statusRow("Tunnel", model.snapshot.tunnelRunning ? "Running" : "Stopped")
                 statusRow("Webhook", model.snapshot.hasWebhookVerificationToken ? "Verified" : "Unverified")
-                if let tunnelRouteHostname = model.tunnelRouteHostname {
-                    statusRow("Route[0]", tunnelRouteHostname)
+                statusRow("Tailscale", model.tailscaleStatus?.backendState ?? "Unavailable")
+                if let dnsName = model.tailscaleStatus?.dnsName {
+                    statusRow("MagicDNS", dnsName)
+                }
+                if let tailscaleStatus = model.tailscaleStatus {
+                    statusRow("MagicDNS enabled", tailscaleStatus.magicDNSEnabled ? "Yes" : "No")
+                }
+                if let funnelStatus = model.tailscaleFunnelStatus {
+                    statusRow("Funnel", funnelStatus.matchesLocalPort ? "Forwarding to local port" : "Not forwarding to local port")
+                    if let proxyTarget = funnelStatus.firstProxyTarget {
+                        statusRow("Funnel target", proxyTarget)
+                    }
+                    statusRow("Funnel HTTPS", funnelStatus.hasHTTPS443 ? "Yes" : "No")
                 }
                 if let serverError = model.serverError {
                     statusRow("Server error", serverError)
                 }
-                if let tunnelError = model.tunnelError {
-                    statusRow("Tunnel error", tunnelError)
+                if let tailscaleError = model.tailscaleError {
+                    statusRow("Tailscale error", tailscaleError)
                 }
-                if let tunnelRouteError = model.tunnelRouteError {
-                    statusRow("Route error", tunnelRouteError)
+                if let tailscaleSetupError = model.tailscaleSetupError {
+                    statusRow("Funnel setup error", tailscaleSetupError)
                 }
             }
             .font(.caption)
@@ -93,7 +116,8 @@ struct BridgeMenuView: View {
             Text(label)
                 .foregroundStyle(.secondary)
             Text(value)
-                .lineLimit(2)
+                .lineLimit(nil)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -206,47 +230,14 @@ struct BridgeMenuView: View {
                 }
 
                 configField(
-                    "cloudflared",
+                    "Tailscale CLI",
                     status: fieldStatus(
-                        current: model.config.cloudflaredPath,
-                        saved: model.savedConfig.cloudflaredPath,
+                        current: model.config.tailscalePath,
+                        saved: model.savedConfig.tailscalePath,
                         isRequired: true
                     )
                 ) {
-                    TextField("cloudflared", text: $model.config.cloudflaredPath)
-                }
-
-                configField(
-                    "Tunnel name",
-                    status: fieldStatus(
-                        current: model.config.cloudflareTunnelName,
-                        saved: model.savedConfig.cloudflareTunnelName,
-                        isRequired: false
-                    )
-                ) {
-                    TextField("name", text: $model.config.cloudflareTunnelName)
-                }
-
-                configField(
-                    "Cloudflare account ID",
-                    status: fieldStatus(
-                        current: model.config.cloudflareAccountID,
-                        saved: model.savedConfig.cloudflareAccountID,
-                        isRequired: normalized(model.config.cloudflareTunnelName).isEmpty == false
-                    )
-                ) {
-                    TextField("account id", text: $model.config.cloudflareAccountID)
-                }
-
-                configField(
-                    "Public host",
-                    status: fieldStatus(
-                        current: model.config.publicWebhookHostname,
-                        saved: model.savedConfig.publicWebhookHostname,
-                        isRequired: false
-                    )
-                ) {
-                    TextField("https://...", text: $model.config.publicWebhookHostname)
+                    TextField("tailscale", text: $model.config.tailscalePath)
                 }
 
                 HStack {
@@ -284,30 +275,8 @@ struct BridgeMenuView: View {
                     )
                 )
 
-                secretField(
-                    "Cloudflare tunnel token",
-                    text: $model.tunnelTokenInput,
-                    isRevealed: $showsTunnelToken,
-                    status: fieldStatus(
-                        current: model.tunnelTokenInput,
-                        saved: model.savedTunnelTokenInput,
-                        isRequired: normalized(model.config.cloudflareTunnelName).isEmpty
-                    )
-                )
-
-                secretField(
-                    "Cloudflare API token",
-                    text: $model.cloudflareAPITokenInput,
-                    isRevealed: $showsCloudflareAPIToken,
-                    status: fieldStatus(
-                        current: model.cloudflareAPITokenInput,
-                        saved: model.savedCloudflareAPITokenInput,
-                        isRequired: normalized(model.config.cloudflareTunnelName).isEmpty == false
-                    )
-                )
-
-                Button("Save secrets to keychain") {
-                    model.saveSecretsToKeychain()
+                Button("Save Secrets") {
+                    model.saveSecretsToConfigFile()
                 }
                 .disabled(!hasSecretChanges)
             }
@@ -371,8 +340,6 @@ struct BridgeMenuView: View {
     private var hasSecretChanges: Bool {
         normalized(model.notionTokenInput) != normalized(model.savedNotionTokenInput)
             || normalized(model.webhookTokenInput) != normalized(model.savedWebhookTokenInput)
-            || normalized(model.tunnelTokenInput) != normalized(model.savedTunnelTokenInput)
-            || normalized(model.cloudflareAPITokenInput) != normalized(model.savedCloudflareAPITokenInput)
     }
 
     private func fieldStatus(current: String, saved: String, isRequired: Bool) -> FieldStatus {
@@ -394,9 +361,6 @@ struct BridgeMenuView: View {
         HStack {
             Button(model.snapshot.serverRunning ? "Stop Server" : "Start Server") {
                 model.snapshot.serverRunning ? model.stopServer() : model.startServer()
-            }
-            Button(model.snapshot.tunnelRunning ? "Stop Tunnel" : "Start Tunnel") {
-                model.snapshot.tunnelRunning ? model.stopTunnel() : model.startTunnel()
             }
             Button("Open Data") { model.openSupportFolder() }
             Spacer()

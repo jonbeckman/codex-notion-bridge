@@ -9,25 +9,21 @@ final class RelayAppModel: ObservableObject {
     @Published private(set) var savedConfig: AppConfig
     @Published var snapshot: RelaySnapshot
     @Published var serverError: String?
-    @Published var tunnelError: String?
+    @Published var tailscaleError: String?
+    @Published var tailscaleSetupError: String?
     @Published var notionTokenInput = ""
     @Published var webhookTokenInput = ""
-    @Published var tunnelTokenInput = ""
-    @Published var cloudflareAPITokenInput = ""
     @Published private(set) var savedNotionTokenInput = ""
     @Published private(set) var savedWebhookTokenInput = ""
-    @Published private(set) var savedTunnelTokenInput = ""
-    @Published private(set) var savedCloudflareAPITokenInput = ""
-    @Published private(set) var tunnelRouteHostname: String?
-    @Published var tunnelRouteError: String?
+    @Published private(set) var tailscaleStatus: TailscaleStatus?
+    @Published private(set) var tailscaleFunnelStatus: TailscaleFunnelStatus?
 
     let paths: AppPaths
     private let configStore: AppConfigStore
     private let secretStore: SecretStoring
     private let eventStore: EventStore
     private let processor: WebhookProcessor
-    private let tunnelManager: CloudflaredTunnelManager
-    private let tunnelRouteResolver = CloudflareTunnelRouteResolver()
+    private let tailscaleStatusResolver = TailscaleStatusResolver()
     private var server: LocalHTTPServer?
     private var refreshTask: Task<Void, Never>?
 
@@ -39,7 +35,7 @@ final class RelayAppModel: ObservableObject {
         let loadedConfig = configStore.load()
         self.config = loadedConfig
         self.savedConfig = loadedConfig
-        self.secretStore = CachedSecretStore(backing: KeychainStore())
+        self.secretStore = FileSecretStore(url: paths.secretsURL)
         self.eventStore = EventStore(paths: paths)
 
         let secretStore = self.secretStore
@@ -64,13 +60,10 @@ final class RelayAppModel: ObservableObject {
             notion: notion,
             codexRunner: codexRunner
         )
-        self.tunnelManager = CloudflaredTunnelManager(secretStore: secretStore)
         self.snapshot = RelaySnapshot(
             serverRunning: false,
-            tunnelRunning: false,
             hasNotionToken: false,
             hasWebhookVerificationToken: false,
-            hasCloudflareTunnelToken: false,
             lastEventAt: nil,
             totalReceived: 0,
             totalIgnored: 0,
@@ -83,20 +76,16 @@ final class RelayAppModel: ObservableObject {
         )
 
         loadSecrets()
-        refreshTunnelRouteHostname()
-        startRefreshLoop()
         if config.autoStartServer {
             startServer()
         }
-        if config.autoStartTunnel {
-            startTunnel()
-        }
+        startTailscaleFunnel()
+        startRefreshLoop()
     }
 
     deinit {
         refreshTask?.cancel()
         server?.stop()
-        tunnelManager.stop()
     }
 
     var menuIcon: String {
@@ -104,22 +93,32 @@ final class RelayAppModel: ObservableObject {
     }
 
     var publicWebhookURL: String? {
-        let routeHostname = tunnelRouteHostname?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let routeHostname, !routeHostname.isEmpty {
-            return Self.webhookURL(host: routeHostname)
+        guard tailscaleStatus?.magicDNSEnabled == true, let dnsName = tailscaleStatus?.dnsName else {
+            return nil
         }
-
-        return Self.webhookURL(host: config.publicWebhookHostname)
+        return Self.webhookURL(host: dnsName)
     }
 
     var publicWebhookURLSource: String {
-        if tunnelRouteHostname?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
-            return "Cloudflare route[0]"
+        if tailscaleFunnelStatus?.matchesLocalPort == true {
+            return "Funnel OK"
         }
-        if publicWebhookURL != nil {
-            return "Config public host"
+        if tailscaleSetupError != nil {
+            return "Funnel setup failed"
         }
-        return "Missing public host"
+        if tailscaleFunnelStatus?.isConfigured == true {
+            return "Funnel target mismatch"
+        }
+        if tailscaleFunnelStatus?.isConfigured == false {
+            return "Funnel not configured"
+        }
+        if tailscaleStatus?.magicDNSEnabled == true, tailscaleStatus?.dnsName?.isEmpty == false {
+            return "Tailscale DNS"
+        }
+        if tailscaleStatus?.magicDNSEnabled == false {
+            return "MagicDNS disabled"
+        }
+        return "Tailscale DNS unavailable"
     }
 
     func startServer() {
@@ -142,54 +141,29 @@ final class RelayAppModel: ObservableObject {
         refreshNow()
     }
 
-    func startTunnel() {
-        tunnelError = nil
-        do {
-            try tunnelManager.start(config: config)
-            refreshTunnelRouteHostname()
-            refreshNow()
-        } catch {
-            tunnelError = error.localizedDescription
-        }
-    }
-
-    func stopTunnel() {
-        tunnelManager.stop()
-        refreshNow()
-    }
-
     func saveConfig() {
         do {
             try configStore.save(config)
             savedConfig = config
-            refreshTunnelRouteHostname()
+            refreshTailscaleStatus()
             refreshNow()
         } catch {
             serverError = error.localizedDescription
         }
     }
 
-    func saveSecretsToKeychain() {
+    func saveSecretsToConfigFile() {
         do {
             let notionToken = notionTokenInput.trimmingCharacters(in: .whitespacesAndNewlines)
             let webhookToken = webhookTokenInput.trimmingCharacters(in: .whitespacesAndNewlines)
-            let tunnelToken = tunnelTokenInput.trimmingCharacters(in: .whitespacesAndNewlines)
-            let cloudflareAPIToken = cloudflareAPITokenInput.trimmingCharacters(in: .whitespacesAndNewlines)
 
             try secretStore.set(notionToken, for: .notionAPIToken)
             try secretStore.set(webhookToken, for: .notionWebhookVerificationToken)
-            try secretStore.set(tunnelToken, for: .cloudflareTunnelToken)
-            try secretStore.set(cloudflareAPIToken, for: .cloudflareAPIToken)
 
             notionTokenInput = notionToken
             webhookTokenInput = webhookToken
-            tunnelTokenInput = tunnelToken
-            cloudflareAPITokenInput = cloudflareAPIToken
             savedNotionTokenInput = notionToken
             savedWebhookTokenInput = webhookToken
-            savedTunnelTokenInput = tunnelToken
-            savedCloudflareAPITokenInput = cloudflareAPIToken
-            refreshTunnelRouteHostname()
             refreshNow()
         } catch {
             serverError = error.localizedDescription
@@ -217,28 +191,47 @@ final class RelayAppModel: ObservableObject {
         NSPasteboard.general.setString(publicWebhookURL, forType: .string)
     }
 
-    func refreshTunnelRouteHostname() {
+    func refreshTailscaleStatus() {
         let config = self.config
-        let apiToken = cloudflareAPITokenInput
-        let tunnelName = config.cloudflareTunnelName.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        guard !tunnelName.isEmpty else {
-            tunnelRouteHostname = nil
-            tunnelRouteError = nil
-            return
-        }
-
-        Task {
+        let tailscaleStatusResolver = self.tailscaleStatusResolver
+        Task.detached(priority: .utility) { [weak self, config, tailscaleStatusResolver] in
             do {
-                let hostname = try await tunnelRouteResolver.firstHostname(config: config, apiToken: apiToken)
+                let status = try tailscaleStatusResolver.status(config: config)
+                let funnelStatus = try tailscaleStatusResolver.funnelStatus(config: config)
                 await MainActor.run {
-                    self.tunnelRouteHostname = hostname
-                    self.tunnelRouteError = nil
+                    self?.tailscaleStatus = status
+                    self?.tailscaleFunnelStatus = funnelStatus
+                    self?.tailscaleError = nil
                 }
             } catch {
                 await MainActor.run {
-                    self.tunnelRouteHostname = nil
-                    self.tunnelRouteError = error.localizedDescription
+                    self?.tailscaleStatus = nil
+                    self?.tailscaleFunnelStatus = nil
+                    self?.tailscaleError = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    func startTailscaleFunnel() {
+        let config = self.config
+        let tailscaleStatusResolver = self.tailscaleStatusResolver
+        tailscaleSetupError = nil
+        Task.detached(priority: .utility) { [weak self, config, tailscaleStatusResolver] in
+            do {
+                try tailscaleStatusResolver.startFunnel(config: config)
+                let status = try tailscaleStatusResolver.status(config: config)
+                let funnelStatus = try tailscaleStatusResolver.funnelStatus(config: config)
+                await MainActor.run {
+                    self?.tailscaleStatus = status
+                    self?.tailscaleFunnelStatus = funnelStatus
+                    self?.tailscaleError = nil
+                    self?.tailscaleSetupError = nil
+                }
+            } catch {
+                await MainActor.run {
+                    self?.tailscaleSetupError = error.localizedDescription
+                    self?.refreshTailscaleStatus()
                 }
             }
         }
@@ -280,19 +273,19 @@ final class RelayAppModel: ObservableObject {
     }
 
     private func loadSecrets() {
-        let notionToken = (try? secretStore.get(.notionAPIToken)) ?? ""
-        let webhookToken = (try? secretStore.get(.notionWebhookVerificationToken)) ?? ""
-        let tunnelToken = (try? secretStore.get(.cloudflareTunnelToken)) ?? ""
-        let cloudflareAPIToken = (try? secretStore.get(.cloudflareAPIToken)) ?? ""
+        let secretStore = self.secretStore
+        Task.detached(priority: .userInitiated) { [weak self, secretStore] in
+            let notionToken = (try? secretStore.get(.notionAPIToken)) ?? ""
+            let webhookToken = (try? secretStore.get(.notionWebhookVerificationToken)) ?? ""
 
-        notionTokenInput = notionToken
-        webhookTokenInput = webhookToken
-        tunnelTokenInput = tunnelToken
-        cloudflareAPITokenInput = cloudflareAPIToken
-        savedNotionTokenInput = notionToken
-        savedWebhookTokenInput = webhookToken
-        savedTunnelTokenInput = tunnelToken
-        savedCloudflareAPITokenInput = cloudflareAPIToken
+            await MainActor.run {
+                self?.notionTokenInput = notionToken
+                self?.webhookTokenInput = webhookToken
+                self?.savedNotionTokenInput = notionToken
+                self?.savedWebhookTokenInput = webhookToken
+                self?.refreshNow()
+            }
+        }
     }
 
     private static func webhookURL(host: String) -> String? {
@@ -325,16 +318,19 @@ final class RelayAppModel: ObservableObject {
     }
 
     private func refreshNow() {
-        Task {
+        let eventStore = self.eventStore
+        let secretStore = self.secretStore
+        let serverRunning = server?.isRunning == true
+        Task.detached(priority: .utility) { [weak self, eventStore, secretStore, serverRunning] in
+            let hasNotionToken = ((try? secretStore.get(.notionAPIToken)) ?? nil)?.isEmpty == false
+            let hasWebhookVerificationToken = ((try? secretStore.get(.notionWebhookVerificationToken)) ?? nil)?.isEmpty == false
             let next = await eventStore.snapshot(
-                serverRunning: server?.isRunning == true,
-                tunnelRunning: tunnelManager.isRunning,
-                hasNotionToken: ((try? secretStore.get(.notionAPIToken)) ?? nil)?.isEmpty == false,
-                hasWebhookVerificationToken: ((try? secretStore.get(.notionWebhookVerificationToken)) ?? nil)?.isEmpty == false,
-                hasCloudflareTunnelToken: ((try? secretStore.get(.cloudflareTunnelToken)) ?? nil)?.isEmpty == false
+                serverRunning: serverRunning,
+                hasNotionToken: hasNotionToken,
+                hasWebhookVerificationToken: hasWebhookVerificationToken
             )
             await MainActor.run {
-                self.snapshot = next
+                self?.snapshot = next
             }
         }
     }

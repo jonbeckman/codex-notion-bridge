@@ -20,21 +20,34 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(TriggerFilter.instructionText(from: "codex: do it", prefixes: ["@Codex", "codex:"]), "do it")
     }
 
-    func testCachedSecretStoreReadsBackingOncePerKey() throws {
-        let backing = CountingSecretStore(values: [.notionAPIToken: "notion_token"])
-        let store = CachedSecretStore(backing: backing)
+    func testFileSecretStorePersistsSecretsToDisk() throws {
+        let url = temporaryDirectory().appendingPathComponent("secrets.json")
+        let store = FileSecretStore(url: url)
 
+        try store.set("notion_token", for: .notionAPIToken)
+        try store.set("webhook_token", for: .notionWebhookVerificationToken)
         XCTAssertEqual(try store.get(.notionAPIToken), "notion_token")
-        XCTAssertEqual(try store.get(.notionAPIToken), "notion_token")
-        XCTAssertEqual(backing.getCount(for: .notionAPIToken), 1)
+        XCTAssertEqual(try store.get(.notionWebhookVerificationToken), "webhook_token")
 
-        try store.set("updated_token", for: .notionAPIToken)
-        XCTAssertEqual(try store.get(.notionAPIToken), "updated_token")
-        XCTAssertEqual(backing.getCount(for: .notionAPIToken), 1)
+        let reloadedStore = FileSecretStore(url: url)
+        XCTAssertEqual(try reloadedStore.get(.notionAPIToken), "notion_token")
+        XCTAssertEqual(try reloadedStore.get(.notionWebhookVerificationToken), "webhook_token")
 
+        let stored = try JSONDecoder.bridge.decode([String: String].self, from: Data(contentsOf: url))
+        XCTAssertEqual(stored["notionAPIToken"], "notion_token")
+        XCTAssertEqual(stored["notionWebhookVerificationToken"], "webhook_token")
+    }
+
+    func testFileSecretStoreDeletesSecretsAndRestrictsFilePermissions() throws {
+        let url = temporaryDirectory().appendingPathComponent("secrets.json")
+        let store = FileSecretStore(url: url)
+
+        try store.set("notion_token", for: .notionAPIToken)
         try store.delete(.notionAPIToken)
+
         XCTAssertNil(try store.get(.notionAPIToken))
-        XCTAssertEqual(backing.getCount(for: .notionAPIToken), 1)
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        XCTAssertEqual(attributes[.posixPermissions] as? Int, 0o600)
     }
 
     func testAppConfigDecodesMissingNewFieldsWithDefaults() throws {
@@ -44,41 +57,92 @@ final class CoreTests: XCTestCase {
           "codexPath": "codex",
           "codexModel": "",
           "codexProfile": "",
-          "cloudflaredPath": "cloudflared",
-          "cloudflareTunnelName": "codex-notion-bridge",
-          "publicWebhookHostname": "",
           "triggerPrefixes": ["@Codex", "codex:"],
           "notionVersion": "2026-03-11",
-          "autoStartServer": true,
-          "autoStartTunnel": false
+          "autoStartServer": true
         }
         """.utf8)
 
         let config = try JSONDecoder.bridge.decode(AppConfig.self, from: data)
 
-        XCTAssertEqual(config.cloudflareTunnelName, "codex-notion-bridge")
-        XCTAssertEqual(config.cloudflareAccountID, "")
+        XCTAssertEqual(config.localPort, 7676)
+        XCTAssertEqual(config.tailscalePath, "tailscale")
     }
 
-    func testCloudflareTunnelRouteParsingUsesFirstHostnameRoute() throws {
-        let tunnelsData = Data("""
-        [
-          {"id": "tunnel-1", "name": "other"},
-          {"id": "tunnel-2", "name": "codex-notion-bridge"}
-        ]
-        """.utf8)
-        let routesData = Data("""
+    func testTailscaleStatusParsingExtractsMagicDNSName() throws {
+        let data = Data("""
         {
-          "success": true,
-          "result": [
-            {"hostname": "first.example.com", "tunnel_id": "tunnel-2", "deleted_at": null},
-            {"hostname": "second.example.com", "tunnel_id": "tunnel-2", "deleted_at": null}
-          ]
+          "BackendState": "Running",
+          "Self": {
+            "DNSName": "device.example-tailnet.ts.net."
+          },
+          "CurrentTailnet": {
+            "MagicDNSEnabled": true
+          }
         }
         """.utf8)
 
-        XCTAssertEqual(try CloudflareTunnelRouteResolver.tunnelID(from: tunnelsData, named: "codex-notion-bridge"), "tunnel-2")
-        XCTAssertEqual(try CloudflareTunnelRouteResolver.firstHostnameRoute(from: routesData), "first.example.com")
+        let status = try TailscaleStatusResolver.status(from: data)
+
+        XCTAssertEqual(status.backendState, "Running")
+        XCTAssertEqual(status.dnsName, "device.example-tailnet.ts.net")
+        XCTAssertTrue(status.magicDNSEnabled)
+    }
+
+    func testTailscaleFunnelStatusDetectsLocalPortMatch() throws {
+        let data = Data("""
+        {
+          "TCP": {
+            "443": {
+              "HTTPS": true
+            }
+          },
+          "Web": {
+            "device.example-tailnet.ts.net:443": {
+              "Handlers": {
+                "/": {
+                  "Proxy": "http://127.0.0.1:7676"
+                }
+              }
+            }
+          }
+        }
+        """.utf8)
+
+        let status = try TailscaleStatusResolver.funnelStatus(from: data, localPort: 7676)
+
+        XCTAssertTrue(status.isConfigured)
+        XCTAssertTrue(status.hasHTTPS443)
+        XCTAssertTrue(status.matchesLocalPort)
+        XCTAssertEqual(status.webHosts, ["device.example-tailnet.ts.net:443"])
+        XCTAssertEqual(status.proxyTargets, ["http://127.0.0.1:7676"])
+    }
+
+    func testTailscaleFunnelStatusDetectsLocalPortMismatch() throws {
+        let data = Data("""
+        {
+          "TCP": {
+            "443": {
+              "HTTPS": true
+            }
+          },
+          "Web": {
+            "device.example-tailnet.ts.net:443": {
+              "Handlers": {
+                "/": {
+                  "Proxy": "http://127.0.0.1:18789"
+                }
+              }
+            }
+          }
+        }
+        """.utf8)
+
+        let status = try TailscaleStatusResolver.funnelStatus(from: data, localPort: 7676)
+
+        XCTAssertTrue(status.isConfigured)
+        XCTAssertFalse(status.matchesLocalPort)
+        XCTAssertEqual(status.firstProxyTarget, "http://127.0.0.1:18789")
     }
 
     func testEventStoreDedupesByEventAndComment() async throws {
@@ -247,40 +311,5 @@ private final class FakeCodexRunner: CodexRunning, @unchecked Sendable {
             stderrPath: input.job.stderrPath,
             pid: 123
         )
-    }
-}
-
-private final class CountingSecretStore: SecretStoring, @unchecked Sendable {
-    private let lock = NSLock()
-    private var values: [SecretKey: String]
-    private var getCounts: [SecretKey: Int] = [:]
-
-    init(values: [SecretKey: String]) {
-        self.values = values
-    }
-
-    func get(_ key: SecretKey) throws -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        getCounts[key, default: 0] += 1
-        return values[key]
-    }
-
-    func set(_ value: String, for key: SecretKey) throws {
-        lock.lock()
-        defer { lock.unlock() }
-        values[key] = value
-    }
-
-    func delete(_ key: SecretKey) throws {
-        lock.lock()
-        defer { lock.unlock() }
-        values.removeValue(forKey: key)
-    }
-
-    func getCount(for key: SecretKey) -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return getCounts[key, default: 0]
     }
 }

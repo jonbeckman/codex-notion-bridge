@@ -16,8 +16,7 @@ let package = Package(
             name: "CodexNotionBridgeCore",
             linkerSettings: [
                 .linkedFramework("CryptoKit"),
-                .linkedFramework("Network"),
-                .linkedFramework("Security")
+                .linkedFramework("Network")
             ]
         ),
         .executableTarget(

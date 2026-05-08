@@ -83,10 +83,8 @@ public actor EventStore {
 
     public func snapshot(
         serverRunning: Bool,
-        tunnelRunning: Bool,
         hasNotionToken: Bool,
-        hasWebhookVerificationToken: Bool,
-        hasCloudflareTunnelToken: Bool
+        hasWebhookVerificationToken: Bool
     ) -> RelaySnapshot {
         let now = Date()
         let active = jobs
@@ -96,10 +94,8 @@ public actor EventStore {
 
         return RelaySnapshot(
             serverRunning: serverRunning,
-            tunnelRunning: tunnelRunning,
             hasNotionToken: hasNotionToken,
             hasWebhookVerificationToken: hasWebhookVerificationToken,
-            hasCloudflareTunnelToken: hasCloudflareTunnelToken,
             lastEventAt: eventRecords.map(\.createdAt).max(),
             totalReceived: eventRecords.filter { $0.kind == "received" }.count,
             totalIgnored: eventRecords.filter { $0.kind == "ignored" || $0.kind == "duplicate" }.count,

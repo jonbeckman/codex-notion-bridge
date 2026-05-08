@@ -1,5 +1,4 @@
 import Foundation
-import Security
 
 public protocol SecretStoring: Sendable {
     func get(_ key: SecretKey) throws -> String?
@@ -7,114 +6,79 @@ public protocol SecretStoring: Sendable {
     func delete(_ key: SecretKey) throws
 }
 
-public final class CachedSecretStore: SecretStoring, @unchecked Sendable {
-    private let backing: SecretStoring
+public final class FileSecretStore: SecretStoring, @unchecked Sendable {
+    private let url: URL
+    private let fileManager: FileManager
     private let lock = NSLock()
-    private var loadedKeys = Set<SecretKey>()
+    private var isLoaded = false
     private var values: [SecretKey: String] = [:]
 
-    public init(backing: SecretStoring) {
-        self.backing = backing
+    public init(url: URL, fileManager: FileManager = .default) {
+        self.url = url
+        self.fileManager = fileManager
     }
 
     public func get(_ key: SecretKey) throws -> String? {
-        lock.lock()
-        if loadedKeys.contains(key) {
-            let value = values[key]
-            lock.unlock()
-            return value
+        try lock.withLock {
+            try loadIfNeededLocked()
+            return values[key]
         }
-        lock.unlock()
-
-        let value = try backing.get(key)
-
-        lock.lock()
-        loadedKeys.insert(key)
-        values[key] = value
-        lock.unlock()
-
-        return value
     }
 
     public func set(_ value: String, for key: SecretKey) throws {
-        try backing.set(value, for: key)
-
-        lock.lock()
-        loadedKeys.insert(key)
-        values[key] = value
-        lock.unlock()
+        try lock.withLock {
+            try loadIfNeededLocked()
+            values[key] = value
+            try saveLoadedValues()
+        }
     }
 
     public func delete(_ key: SecretKey) throws {
-        try backing.delete(key)
+        try lock.withLock {
+            try loadIfNeededLocked()
+            values.removeValue(forKey: key)
+            try saveLoadedValues()
+        }
+    }
 
-        lock.lock()
-        loadedKeys.insert(key)
-        values.removeValue(forKey: key)
-        lock.unlock()
+    private func loadIfNeededLocked() throws {
+        guard !isLoaded else { return }
+        if fileManager.fileExists(atPath: url.path) {
+            let data = try Data(contentsOf: url)
+            let stored = try JSONDecoder.bridge.decode([String: String].self, from: data)
+            values = Dictionary(uniqueKeysWithValues: stored.compactMap { key, value in
+                guard let secretKey = SecretKey(rawValue: key) else {
+                    return nil
+                }
+                return (secretKey, value)
+            })
+        } else {
+            values = [:]
+        }
+        isLoaded = true
+    }
+
+    private func saveLoadedValues() throws {
+        let pairs: [(String, String)] = values.compactMap { key, value in
+            return (key.rawValue, value)
+        }
+        let stored = Dictionary(uniqueKeysWithValues: pairs)
+        let data = try JSONEncoder.bridge.encode(stored)
+        try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if !fileManager.fileExists(atPath: url.path) {
+            _ = fileManager.createFile(atPath: url.path, contents: Data(), attributes: [.posixPermissions: 0o600])
+        }
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        try data.write(to: url)
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 }
 
-public final class KeychainStore: SecretStoring, @unchecked Sendable {
-    private let service: String
-
-    public init(service: String = "CodexNotionBridge") {
-        self.service = service
-    }
-
-    public func get(_ key: SecretKey) throws -> String? {
-        var query = baseQuery(key)
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        if status == errSecItemNotFound {
-            return nil
-        }
-        guard status == errSecSuccess else {
-            throw RelayError.configuration("Keychain read failed with status \(status).")
-        }
-        guard let data = item as? Data else {
-            return nil
-        }
-        return String(data: data, encoding: .utf8)
-    }
-
-    public func set(_ value: String, for key: SecretKey) throws {
-        let data = Data(value.utf8)
-        var query = baseQuery(key)
-        query[kSecValueData as String] = data
-
-        let status = SecItemAdd(query as CFDictionary, nil)
-        if status == errSecDuplicateItem {
-            let updateStatus = SecItemUpdate(
-                baseQuery(key) as CFDictionary,
-                [kSecValueData as String: data] as CFDictionary
-            )
-            guard updateStatus == errSecSuccess else {
-                throw RelayError.configuration("Keychain update failed with status \(updateStatus).")
-            }
-            return
-        }
-        guard status == errSecSuccess else {
-            throw RelayError.configuration("Keychain write failed with status \(status).")
-        }
-    }
-
-    public func delete(_ key: SecretKey) throws {
-        let status = SecItemDelete(baseQuery(key) as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw RelayError.configuration("Keychain delete failed with status \(status).")
-        }
-    }
-
-    private func baseQuery(_ key: SecretKey) -> [String: Any] {
-        [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: key.rawValue
-        ]
+private extension NSLock {
+    func withLock<T>(_ body: () throws -> T) rethrows -> T {
+        lock()
+        defer { unlock() }
+        return try body()
     }
 }
 

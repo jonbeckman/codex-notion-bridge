@@ -2,12 +2,26 @@ import Foundation
 
 public struct AppSetupState: Codable, Equatable, Sendable {
     public var codexConfigured: Bool
+    public var onboardingCompleted: Bool
 
-    public init(codexConfigured: Bool) {
+    public init(codexConfigured: Bool, onboardingCompleted: Bool = false) {
         self.codexConfigured = codexConfigured
+        self.onboardingCompleted = onboardingCompleted
     }
 
-    public static let `default` = AppSetupState(codexConfigured: false)
+    public static let `default` = AppSetupState(codexConfigured: false, onboardingCompleted: false)
+
+    enum CodingKeys: String, CodingKey {
+        case codexConfigured
+        case onboardingCompleted
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = AppSetupState.default
+        self.codexConfigured = try container.decodeIfPresent(Bool.self, forKey: .codexConfigured) ?? defaults.codexConfigured
+        self.onboardingCompleted = try container.decodeIfPresent(Bool.self, forKey: .onboardingCompleted) ?? defaults.onboardingCompleted
+    }
 }
 
 public struct AppConfig: Codable, Equatable, Sendable {

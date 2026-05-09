@@ -12,6 +12,8 @@ enum TailscaleOperationPhase: Equatable {
 
 @MainActor
 final class RelayAppModel: ObservableObject {
+    private static let onboardingAutosaveDelay: Duration = .milliseconds(700)
+
     @Published var config: AppConfig
     @Published private(set) var savedConfig: AppConfig
     @Published var snapshot: RelaySnapshot
@@ -35,6 +37,8 @@ final class RelayAppModel: ObservableObject {
     private let tailscaleStatusResolver = TailscaleStatusResolver()
     private var server: LocalHTTPServer?
     private var refreshTask: Task<Void, Never>?
+    private var tailscaleAutosaveTask: Task<Void, Never>?
+    private var notionAutosaveTask: Task<Void, Never>?
 
     init() {
         self.paths = AppPaths()
@@ -69,20 +73,7 @@ final class RelayAppModel: ObservableObject {
             notion: notion,
             codexRunner: codexRunner
         )
-        self.snapshot = RelaySnapshot(
-            serverRunning: false,
-            hasNotionToken: false,
-            hasWebhookVerificationToken: false,
-            lastEventAt: nil,
-            totalReceived: 0,
-            totalIgnored: 0,
-            totalFailed: 0,
-            totalCompleted: 0,
-            consumed1h: 0,
-            consumed24h: 0,
-            consumed72h: 0,
-            activeJobs: []
-        )
+        self.snapshot = Self.emptySnapshot(serverRunning: false)
 
         loadSecrets()
         if config.autoStartServer {
@@ -94,11 +85,13 @@ final class RelayAppModel: ObservableObject {
 
     deinit {
         refreshTask?.cancel()
+        tailscaleAutosaveTask?.cancel()
+        notionAutosaveTask?.cancel()
         server?.stop()
     }
 
     var menuIcon: String {
-        onboardingComplete ? "checkmark.circle" : "exclamationmark.triangle"
+        isSetupReady ? "checkmark.circle" : "exclamationmark.triangle"
     }
 
     var isTailscaleReady: Bool {
@@ -122,8 +115,16 @@ final class RelayAppModel: ObservableObject {
             && !Self.normalized(savedConfig.codexPath).isEmpty
     }
 
+    var hasCompletedOnboarding: Bool {
+        savedConfig.setup.onboardingCompleted
+    }
+
+    var isSetupReady: Bool {
+        isTailscaleReady && isNotionReady
+    }
+
     var onboardingComplete: Bool {
-        isTailscaleReady && isNotionReady && isCodexReady
+        hasCompletedOnboarding || isSetupReady
     }
 
     var hasTailscaleConfigChanges: Bool {
@@ -214,7 +215,7 @@ final class RelayAppModel: ObservableObject {
     func saveTailscaleSettings() {
         let previousConfig = savedConfig
         var nextConfig = sanitizedConfig(config)
-        nextConfig.setup.codexConfigured = savedConfig.setup.codexConfigured
+        nextConfig.setup = savedConfig.setup
         do {
             try persistConfig(nextConfig)
             ensureServerAfterSaving(previousConfig: previousConfig, nextConfig: nextConfig)
@@ -231,6 +232,7 @@ final class RelayAppModel: ObservableObject {
         }
 
         var nextConfig = sanitizedConfig(config)
+        nextConfig.setup = savedConfig.setup
         nextConfig.setup.codexConfigured = true
         do {
             try persistConfig(nextConfig)
@@ -253,6 +255,7 @@ final class RelayAppModel: ObservableObject {
             notionTokenInput = notionToken
             savedNotionTokenInput = notionToken
             refreshNow()
+            completeOnboardingIfReady()
         } catch {
             serverError = error.localizedDescription
         }
@@ -276,18 +279,88 @@ final class RelayAppModel: ObservableObject {
         }
     }
 
-    func openSupportFolder() {
-        NSWorkspace.shared.open(paths.root)
-    }
-
     func openConfigFile() {
         do {
             if !FileManager.default.fileExists(atPath: paths.configURL.path) {
                 try configStore.save(config)
             }
-            NSWorkspace.shared.open(paths.configURL)
+            openInTextEditor(paths.configURL)
         } catch {
             serverError = error.localizedDescription
+        }
+    }
+
+    func openSecretsFile() {
+        do {
+            if !FileManager.default.fileExists(atPath: paths.secretsURL.path) {
+                try FileManager.default.createDirectory(at: paths.root, withIntermediateDirectories: true)
+                try Data("{\n}\n".utf8).write(to: paths.secretsURL, options: [.atomic])
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: paths.secretsURL.path)
+            }
+            openInTextEditor(paths.secretsURL)
+        } catch {
+            serverError = error.localizedDescription
+        }
+    }
+
+    private func openInTextEditor(_ url: URL) {
+        let textEditURL = URL(fileURLWithPath: "/System/Applications/TextEdit.app", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: textEditURL.path) else {
+            NSWorkspace.shared.open(url)
+            return
+        }
+
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        NSWorkspace.shared.open([url], withApplicationAt: textEditURL, configuration: configuration)
+    }
+
+    func resetToFreshInstall() {
+        tailscaleAutosaveTask?.cancel()
+        notionAutosaveTask?.cancel()
+        server?.stop()
+        server = nil
+        setTailscaleOperationPhase(.idle)
+        tailscaleStatus = nil
+        tailscaleFunnelStatus = nil
+        tailscaleError = nil
+        tailscaleSetupError = nil
+        serverError = nil
+
+        do {
+            try persistConfig(.default)
+            for key in SecretKey.allCases {
+                try secretStore.delete(key)
+            }
+            notionTokenInput = ""
+            webhookTokenInput = ""
+            savedNotionTokenInput = ""
+            savedWebhookTokenInput = ""
+            snapshot = Self.emptySnapshot(serverRunning: false)
+        } catch {
+            serverError = error.localizedDescription
+            return
+        }
+
+        let eventStore = self.eventStore
+        Task { [weak self, eventStore] in
+            do {
+                try await eventStore.reset()
+                await MainActor.run {
+                    guard let self else { return }
+                    self.snapshot = Self.emptySnapshot(serverRunning: false)
+                    if self.config.autoStartServer {
+                        self.startServer()
+                    } else {
+                        self.refreshNow()
+                    }
+                    self.startTailscaleFunnel()
+                }
+            } catch {
+                await MainActor.run {
+                    self?.serverError = error.localizedDescription
+                }
+            }
         }
     }
 
@@ -302,6 +375,30 @@ final class RelayAppModel: ObservableObject {
         guard !Self.normalized(token).isEmpty else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(Self.normalized(token), forType: .string)
+    }
+
+    func scheduleOnboardingTailscaleAutosave() {
+        guard !hasCompletedOnboarding else { return }
+        tailscaleAutosaveTask?.cancel()
+        tailscaleAutosaveTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.onboardingAutosaveDelay)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self?.autosaveTailscaleSettingsIfNeeded()
+            }
+        }
+    }
+
+    func scheduleOnboardingNotionAutosave() {
+        guard !hasCompletedOnboarding else { return }
+        notionAutosaveTask?.cancel()
+        notionAutosaveTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.onboardingAutosaveDelay)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self?.autosaveNotionTokenIfNeeded()
+            }
+        }
     }
 
     func refreshTailscaleStatus() {
@@ -336,6 +433,7 @@ final class RelayAppModel: ObservableObject {
                     self?.tailscaleFunnelStatus = funnelStatus
                     self?.tailscaleError = nil
                     self?.setTailscaleOperationPhase(.idle)
+                    self?.completeOnboardingIfReady()
                 }
             } catch {
                 await MainActor.run {
@@ -384,6 +482,7 @@ final class RelayAppModel: ObservableObject {
                     self?.tailscaleError = nil
                     self?.tailscaleSetupError = nil
                     self?.setTailscaleOperationPhase(.idle)
+                    self?.completeOnboardingIfReady()
                 }
             } catch {
                 await MainActor.run {
@@ -445,6 +544,27 @@ final class RelayAppModel: ObservableObject {
         }
     }
 
+    private func autosaveTailscaleSettingsIfNeeded() {
+        guard !hasCompletedOnboarding,
+              hasTailscaleConfigChanges,
+              !Self.normalized(config.tailscalePath).isEmpty,
+              config.localPort > 0,
+              !isTailscaleLoading else {
+            return
+        }
+
+        saveTailscaleSettings()
+    }
+
+    private func autosaveNotionTokenIfNeeded() {
+        guard !hasCompletedOnboarding,
+              Self.normalized(notionTokenInput) != Self.normalized(savedNotionTokenInput) else {
+            return
+        }
+
+        saveNotionToken()
+    }
+
     private func sanitizedConfig(_ config: AppConfig) -> AppConfig {
         var next = config
         next.codexPath = Self.normalized(next.codexPath)
@@ -458,6 +578,20 @@ final class RelayAppModel: ObservableObject {
         try configStore.save(nextConfig)
         config = nextConfig
         savedConfig = nextConfig
+    }
+
+    private func completeOnboardingIfReady() {
+        guard !savedConfig.setup.onboardingCompleted, isSetupReady else {
+            return
+        }
+
+        var nextConfig = savedConfig
+        nextConfig.setup.onboardingCompleted = true
+        do {
+            try persistConfig(nextConfig)
+        } catch {
+            serverError = error.localizedDescription
+        }
     }
 
     private func ensureServerAfterSaving(previousConfig: AppConfig, nextConfig: AppConfig) {
@@ -485,6 +619,23 @@ final class RelayAppModel: ObservableObject {
 
     private static func normalized(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func emptySnapshot(serverRunning: Bool) -> RelaySnapshot {
+        RelaySnapshot(
+            serverRunning: serverRunning,
+            hasNotionToken: false,
+            hasWebhookVerificationToken: false,
+            lastEventAt: nil,
+            totalReceived: 0,
+            totalIgnored: 0,
+            totalFailed: 0,
+            totalCompleted: 0,
+            consumed1h: 0,
+            consumed24h: 0,
+            consumed72h: 0,
+            activeJobs: []
+        )
     }
 
     private static func webhookURL(host: String) -> String? {
@@ -543,6 +694,7 @@ final class RelayAppModel: ObservableObject {
                 self.savedNotionTokenInput = notionToken
                 self.savedWebhookTokenInput = webhookToken
                 self.snapshot = next
+                self.completeOnboardingIfReady()
             }
         }
     }

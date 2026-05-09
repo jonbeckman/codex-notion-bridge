@@ -8,10 +8,10 @@ struct BridgeMenuView: View {
     @State private var showsWebhookToken = false
     @State private var tailscaleSettingsExpanded = false
     @State private var notionSettingsExpanded = false
-    @State private var codexSettingsExpanded = false
     @State private var completedTailscaleExpanded = false
     @State private var completedNotionExpanded = false
-    @State private var completedCodexExpanded = false
+    @State private var configurationExpanded = false
+    @State private var showingResetConfirmation = false
 
     var body: some View {
         ScrollView {
@@ -32,6 +32,15 @@ struct BridgeMenuView: View {
             .padding(16)
         }
         .textFieldStyle(.roundedBorder)
+        .onChange(of: model.config.tailscalePath) { _, _ in
+            model.scheduleOnboardingTailscaleAutosave()
+        }
+        .onChange(of: model.config.localPort) { _, _ in
+            model.scheduleOnboardingTailscaleAutosave()
+        }
+        .onChange(of: model.notionTokenInput) { _, _ in
+            model.scheduleOnboardingNotionAutosave()
+        }
     }
 
     private var header: some View {
@@ -45,11 +54,11 @@ struct BridgeMenuView: View {
             }
             Spacer()
             HStack(spacing: 6) {
-                Text(model.onboardingComplete ? "Ready" : "Needs setup")
+                Text(model.isSetupReady ? "Ready" : "Needs setup")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Circle()
-                    .fill(model.onboardingComplete ? .green : .yellow)
+                    .fill(model.isSetupReady ? .green : .yellow)
                     .frame(width: 10, height: 10)
             }
         }
@@ -60,19 +69,19 @@ struct BridgeMenuView: View {
             return lastEventText
         }
         if !model.isTailscaleReady {
-            return "Step 1 of 3"
+            return "Tailscale setup required"
         }
         if !model.isNotionReady {
-            return "Step 2 of 3"
+            return "Notion setup required"
         }
-        return "Step 3 of 3"
+        return "Ready"
     }
 
     private var setupFlow: some View {
         VStack(alignment: .leading, spacing: 12) {
             setupSection(
-                number: 1,
                 title: "Verify Tailscale",
+                helpText: tailscaleSetupHelpText,
                 status: model.isTailscaleReady ? .complete : .active
             ) {
                 tailscaleStepContent
@@ -80,40 +89,28 @@ struct BridgeMenuView: View {
 
             if model.isTailscaleReady {
                 setupSection(
-                    number: 2,
                     title: "Connect Notion",
+                    helpText: notionSetupHelpText,
                     status: model.isNotionReady ? .complete : .active
                 ) {
                     notionStepContent
-                }
-            }
-
-            if model.isNotionReady {
-                setupSection(
-                    number: 3,
-                    title: "Configure Codex",
-                    status: model.isCodexReady ? .complete : .active
-                ) {
-                    codexStepContent
                 }
             }
         }
     }
 
     private func setupSection<Content: View>(
-        number: Int,
         title: String,
+        helpText: String,
         status: StepStatus,
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("Step \(number)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 Text(title)
                     .font(.subheadline)
                     .fontWeight(.semibold)
+                helpIcon(helpText)
                 Spacer()
                 Label(status.label, systemImage: status.systemImage)
                     .font(.caption2)
@@ -132,12 +129,12 @@ struct BridgeMenuView: View {
             if model.isTailscaleReady {
                 readyLine("Tailscale Funnel ready", systemImage: "network")
                 DisclosureGroup("Tailscale Settings", isExpanded: $tailscaleSettingsExpanded) {
-                    tailscaleSettingsFields
+                    tailscaleSettingsFields(showManualSave: false)
                         .padding(.top, 8)
                 }
             } else {
                 tailscaleReadiness
-                tailscaleSettingsFields
+                tailscaleSettingsFields(showManualSave: false)
             }
         }
     }
@@ -168,49 +165,19 @@ struct BridgeMenuView: View {
         }
     }
 
-    private var notionSetupInstructions: some View {
+    private var notionSetupFields: some View {
         VStack(alignment: .leading, spacing: 8) {
-            instructionRow(number: 1) {
-                HStack(spacing: 3) {
-                    Text("Create a connection")
-                    Link("here", destination: URL(string: "https://www.notion.so/profile/integrations/internal")!)
-                }
-            }
-            instructionRow(number: 2) {
-                Text("Give it read and write comment permissions")
-            }
-            instructionRow(number: 3) {
-                Text("Copy the access token and enter it below")
-            }
             notionAPITokenField
-                .padding(.leading, 22)
                 .padding(.bottom, 4)
             Divider()
-                .padding(.leading, 22)
                 .padding(.vertical, 2)
-            instructionRow(number: 4) {
-                Text("Copy the webhook URL below and add it as a webhook subscription")
-            }
             notionWebhookURLRow
-            instructionRow(number: 5) {
-                Text("Copy the verification token back to Notion when it appears")
-            }
             notionVerificationTokenRow
+            Link(destination: URL(string: "https://www.notion.so/profile/integrations/internal")!) {
+                Label("Open Notion integrations", systemImage: "arrow.up.right.square")
+            }
+            .font(.caption)
         }
-    }
-
-    private func instructionRow<Content: View>(
-        number: Int,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text("\(number).")
-                .foregroundStyle(.secondary)
-                .frame(width: 16, alignment: .trailing)
-            content()
-            Spacer(minLength: 0)
-        }
-        .font(.caption)
     }
 
     private var notionAPITokenField: some View {
@@ -281,7 +248,7 @@ struct BridgeMenuView: View {
         }
     }
 
-    private var tailscaleSettingsFields: some View {
+    private func tailscaleSettingsFields(showManualSave: Bool) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             configField(
                 "Tailscale CLI",
@@ -302,12 +269,14 @@ struct BridgeMenuView: View {
             }
 
             HStack {
-                Button {
-                    model.saveTailscaleSettings()
-                } label: {
-                    Label("Save & Restart Funnel", systemImage: "arrow.clockwise")
+                if showManualSave {
+                    Button {
+                        model.saveTailscaleSettings()
+                    } label: {
+                        Label("Save & Restart Funnel", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(normalized(model.config.tailscalePath).isEmpty || model.config.localPort == 0 || model.isTailscaleLoading)
                 }
-                .disabled(normalized(model.config.tailscalePath).isEmpty || model.config.localPort == 0 || model.isTailscaleLoading)
 
                 Button {
                     model.refreshTailscaleStatus()
@@ -321,45 +290,34 @@ struct BridgeMenuView: View {
 
     private var notionStepContent: some View {
         VStack(alignment: .leading, spacing: 10) {
-            notionSetupInstructions
             if model.isNotionReady {
-                readyLine("Notion secrets saved", systemImage: "lock.fill")
-                DisclosureGroup("Notion Settings", isExpanded: $notionSettingsExpanded) {
-                    notionSecretFields
-                        .padding(.top, 8)
+                readyLine("Notion connected and webhook verified", systemImage: "lock.fill")
+                if model.hasCompletedOnboarding {
+                    DisclosureGroup("Notion Settings", isExpanded: $notionSettingsExpanded) {
+                        notionSecretFields(showManualSave: true)
+                            .padding(.top, 8)
+                    }
                 }
             } else {
-                notionSecretFields
+                notionSetupFields
             }
         }
     }
 
-    private var notionSecretFields: some View {
+    private func notionSecretFields(showManualSave: Bool) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Button {
-                model.saveNotionToken()
-            } label: {
-                Label("Save Notion Token", systemImage: "square.and.arrow.down")
-            }
-            .disabled(!hasNotionAPITokenChanges)
-        }
-    }
-
-    private var codexStepContent: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if model.isCodexReady {
-                readyLine("Codex settings saved", systemImage: "terminal.fill")
-                DisclosureGroup("Codex Settings", isExpanded: $codexSettingsExpanded) {
-                    codexConfigFields
-                        .padding(.top, 8)
+            if showManualSave {
+                Button {
+                    model.saveNotionToken()
+                } label: {
+                    Label("Save Notion Token", systemImage: "square.and.arrow.down")
                 }
-            } else {
-                codexConfigFields
+                .disabled(!hasNotionAPITokenChanges)
             }
         }
     }
 
-    private var codexConfigFields: some View {
+    private func codexConfigFields(showManualSave: Bool) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             configField(
                 "Codex path",
@@ -395,18 +353,30 @@ struct BridgeMenuView: View {
             }
 
             HStack {
-                Button {
-                    model.saveCodexSettings()
-                } label: {
-                    Label("Save Codex Settings", systemImage: "square.and.arrow.down")
+                if showManualSave {
+                    Button {
+                        model.saveCodexSettings()
+                    } label: {
+                        Label("Save Codex Settings", systemImage: "square.and.arrow.down")
+                    }
+                    .disabled(!canSaveCodexSettings)
                 }
-                .disabled(!canSaveCodexSettings)
+            }
+        }
+    }
 
-                Button {
-                    model.openConfigFile()
-                } label: {
-                    Label("Open Config", systemImage: "doc.text")
-                }
+    private var fileActionButtons: some View {
+        HStack(spacing: 8) {
+            Button {
+                model.openConfigFile()
+            } label: {
+                Label("Open Config", systemImage: "doc.text")
+            }
+
+            Button {
+                model.openSecretsFile()
+            } label: {
+                Label("Open Secrets", systemImage: "lock.doc")
             }
         }
     }
@@ -420,27 +390,29 @@ struct BridgeMenuView: View {
 
     private var completedSetup: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Setup")
-                .font(.subheadline)
-                .fontWeight(.semibold)
-            DisclosureGroup("Step 1: Tailscale", isExpanded: $completedTailscaleExpanded) {
+            DisclosureGroup(isExpanded: $completedTailscaleExpanded) {
                 VStack(alignment: .leading, spacing: 10) {
                     readyLine("Tailscale Funnel ready", systemImage: "network")
-                    tailscaleSettingsFields
+                    tailscaleSettingsFields(showManualSave: true)
                 }
                 .padding(.top, 8)
+            } label: {
+                sectionHeader("Tailscale", helpText: tailscaleSetupHelpText)
             }
-            DisclosureGroup("Step 2: Notion", isExpanded: $completedNotionExpanded) {
+            DisclosureGroup(isExpanded: $completedNotionExpanded) {
                 VStack(alignment: .leading, spacing: 10) {
-                    notionSetupInstructions
-                    notionSecretFields
+                    notionSetupFields
+                    notionSecretFields(showManualSave: true)
                 }
                 .padding(.top, 8)
+            } label: {
+                sectionHeader("Notion", helpText: notionSetupHelpText)
             }
-            DisclosureGroup("Step 3: Codex", isExpanded: $completedCodexExpanded) {
-                codexConfigFields
+            DisclosureGroup("Codex", isExpanded: $configurationExpanded) {
+                codexConfigFields(showManualSave: true)
                     .padding(.top, 8)
             }
+            fileActionButtons
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -619,6 +591,21 @@ struct BridgeMenuView: View {
         }
     }
 
+    private func sectionHeader(_ title: String, helpText: String) -> some View {
+        HStack(spacing: 5) {
+            Text(title)
+            helpIcon(helpText)
+        }
+    }
+
+    private func helpIcon(_ text: String) -> some View {
+        Image(systemName: "questionmark.circle")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .help(text)
+            .accessibilityLabel("Setup instructions")
+    }
+
     private func compactStatusRow(
         _ label: String,
         _ value: String,
@@ -734,8 +721,28 @@ struct BridgeMenuView: View {
         model.isTailscaleLoading ? model.tailscaleOperationText : "Tailscale MagicDNS unavailable"
     }
 
+    private var tailscaleSetupHelpText: String {
+        """
+        1. Sign in to Tailscale and make sure MagicDNS is enabled.
+        2. Confirm the Tailscale CLI path and local webhook port.
+        3. Let the app configure Funnel for the local webhook port.
+        4. Use Refresh after changing Tailscale or Funnel state.
+        """
+    }
+
+    private var notionSetupHelpText: String {
+        """
+        1. Create a Notion internal integration.
+        2. Give it read and insert comment permissions.
+        3. Share the target Notion pages or databases with the integration.
+        4. Paste the access token below.
+        5. Add the webhook URL below as a Notion webhook subscription.
+        6. Copy the verification token back to Notion when it appears.
+        """
+    }
+
     private var canSaveCodexSettings: Bool {
-        !normalized(model.config.codexPath).isEmpty && (!model.isCodexReady || model.hasCodexConfigChanges)
+        !normalized(model.config.codexPath).isEmpty && model.hasCodexConfigChanges
     }
 
     private var hasNotionAPITokenChanges: Bool {
@@ -758,13 +765,45 @@ struct BridgeMenuView: View {
     }
 
     private var controls: some View {
-        HStack {
-            Button(model.snapshot.serverRunning ? "Stop Server" : "Start Server") {
-                model.snapshot.serverRunning ? model.stopServer() : model.startServer()
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Button(model.snapshot.serverRunning ? "Stop Server" : "Start Server") {
+                    model.snapshot.serverRunning ? model.stopServer() : model.startServer()
+                }
+                Button(role: .destructive) {
+                    showingResetConfirmation = true
+                } label: {
+                    Label("Reset", systemImage: "arrow.counterclockwise")
+                }
+                .buttonStyle(.bordered)
+                .tint(.red)
+                .help("Reset configuration and secrets to a fresh install")
+                Spacer()
+                Button("Quit") { NSApplication.shared.terminate(nil) }
             }
-            Button("Open Data") { model.openSupportFolder() }
-            Spacer()
-            Button("Quit") { NSApplication.shared.terminate(nil) }
+
+            if showingResetConfirmation {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("Reset to fresh install?")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Cancel") {
+                        showingResetConfirmation = false
+                    }
+                    Button(role: .destructive) {
+                        showingResetConfirmation = false
+                        model.resetToFreshInstall()
+                    } label: {
+                        Text("Reset Config & Secrets")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+                }
+                .padding(8)
+                .background(.red.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
         }
     }
 

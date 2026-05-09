@@ -68,6 +68,22 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(config.localPort, 7676)
         XCTAssertEqual(config.tailscalePath, "tailscale")
         XCTAssertFalse(config.setup.codexConfigured)
+        XCTAssertFalse(config.setup.onboardingCompleted)
+    }
+
+    func testAppConfigDecodesOlderSetupStateWithDefaults() throws {
+        let data = Data("""
+        {
+          "setup": {
+            "codexConfigured": true
+          }
+        }
+        """.utf8)
+
+        let config = try JSONDecoder.bridge.decode(AppConfig.self, from: data)
+
+        XCTAssertTrue(config.setup.codexConfigured)
+        XCTAssertFalse(config.setup.onboardingCompleted)
     }
 
     func testTailscaleStatusParsingExtractsMagicDNSName() throws {
@@ -160,6 +176,30 @@ final class CoreTests: XCTestCase {
         XCTAssertTrue(duplicateEvent)
         XCTAssertTrue(duplicateComment)
         XCTAssertFalse(newEvent)
+    }
+
+    func testEventStoreResetClearsPersistedState() async throws {
+        let paths = AppPaths(root: temporaryDirectory())
+        try paths.ensure()
+        let store = EventStore(paths: paths)
+        let markerURL = paths.jobsDirectory.appendingPathComponent("marker.txt")
+
+        _ = try await store.isDuplicateAndMark(eventID: "evt_1", commentID: "comment_1")
+        try await store.appendEvent(kind: "received", detail: "test", eventID: "evt_1", commentID: "comment_1")
+        try "marker".write(to: markerURL, atomically: true, encoding: .utf8)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.dedupeURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.eventsJSONLURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: markerURL.path))
+
+        try await store.reset()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.dedupeURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.eventsJSONLURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: markerURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.jobsDirectory.path))
+        let wasDuplicate = try await store.isDuplicateAndMark(eventID: "evt_1", commentID: "comment_1")
+        XCTAssertFalse(wasDuplicate)
     }
 
     func testWebhookVerificationStoresToken() async throws {

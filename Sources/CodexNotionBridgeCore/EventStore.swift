@@ -81,6 +81,22 @@ public actor EventStore {
         jobs
     }
 
+    public func reset() throws {
+        seenEventIDs = []
+        seenCommentIDs = []
+        eventRecords = []
+        jobs = []
+
+        let fileManager = FileManager.default
+        for url in [paths.dedupeURL, paths.jobsURL, paths.eventsJSONLURL] where fileManager.fileExists(atPath: url.path) {
+            try fileManager.removeItem(at: url)
+        }
+        if fileManager.fileExists(atPath: paths.jobsDirectory.path) {
+            try fileManager.removeItem(at: paths.jobsDirectory)
+        }
+        try paths.ensure()
+    }
+
     public func snapshot(
         serverRunning: Bool,
         hasNotionToken: Bool,
